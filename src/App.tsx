@@ -73,10 +73,9 @@ export default function App() {
   const addToast = useCallback((message: string, type: 'info' | 'success' | 'error' = 'info') => {
     const id = `toast_${Date.now()}_${Math.random()}`;
     setToasts((prev) => [...prev, { id, message, type }]);
-    const duration = type === 'error' ? 6500 : 3200;
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, duration);
+    }, 3200);
   }, []);
 
   const removeToast = useCallback((id: string) => {
@@ -170,12 +169,6 @@ export default function App() {
   // Generate and Load Sample TypeScript Three.js Script
   const handleLoadSampleScript = () => {
     const sampleFile = createSampleScriptFile();
-    // Safely dispose any previous procedural model with the same name before mounting
-    const existing = models.find((m) => m.name === sampleFile.name);
-    if (existing) {
-      dispose3DObject(existing.object);
-      setModels((prev) => prev.filter((m) => m.id !== existing.id));
-    }
     handleFilesSelected([sampleFile]);
   };
 
@@ -441,7 +434,6 @@ export default function App() {
         fps={fps}
         onFilesSelected={handleFilesSelected}
         onGenerateDemo={handleGenerateDemo}
-        onLoadSampleScript={handleLoadSampleScript}
         onTakeScreenshot={handleTakeScreenshot}
         onToggleShortcuts={() => setIsShortcutsOpen(true)}
         onSelectModel={handleSelectModel}
@@ -512,7 +504,6 @@ export default function App() {
         }}
         onLoadDemo={handleGenerateDemo}
         onLoadSampleScript={handleLoadSampleScript}
-        onFilesSelected={handleFilesSelected}
       />
 
       {/* 6. Non-blocking Toast Alerts */}

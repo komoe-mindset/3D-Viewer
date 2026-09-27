@@ -16,7 +16,6 @@ export interface LoadedModel {
   wireframeOnly?: boolean;
   stats: ModelStats;
   animations: THREE.AnimationClip[];
-  isScript?: boolean;
 }
 
 export interface TransformValues {
@@ -67,4 +66,4 @@ export const SUPPORTED_FILE_EXTENSIONS: readonly SupportedFileFormat[] = [
   'js',
 ] as const;
 
-export const ACCEPTED_FILE_EXTENSIONS = '.glb,.gltf,.fbx,.ply,.spz,.obj,.stl,.ts,.js,text/javascript,application/javascript,application/typescript';
+export const ACCEPTED_FILE_EXTENSIONS = '.glb,.gltf,.fbx,.ply,.spz,.obj,.stl,.ts,.js,text/javascript,application/typescript';

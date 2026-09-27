@@ -189,8 +189,6 @@ export function normalizeModelPosition(object: THREE.Object3D, existingModels: L
   }
 }
 
-export const isThreeScript = (fileName: string): boolean => /\.(ts|js)$/i.test(fileName);
-
 /**
  * Loads a 3D model file and returns a LoadedModel object.
  * Processes via the globalModelLoadingQueue to limit concurrent decodes to 2 max.
@@ -350,8 +348,9 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
           });
           object = new THREE.Mesh(geom, mat);
         }
-      } else if (isThreeScript(filename)) {
-        object = await loadThreeJsScript(file);
+      } else if (ext === 'ts' || ext === 'js') {
+        const code = await file.text();
+        object = await executeThreeScript(code, filename);
       } else {
         throw new Error(
           `Unsupported file format: .${ext}. Supported formats are .glb, .gltf, .fbx, .ply, .spz, .obj, .stl, .ts, .js`
@@ -362,15 +361,8 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
         throw new Error(`Failed to parse 3D model geometry for ${filename}`);
       }
 
-      if (isThreeScript(filename)) {
-        // Procedural script-generated groups:
-        // center horizontal axes (X, Z) and align base to Y=0 (grid floor)
-        alignAndCenterProceduralModel(object);
-        applyMaterialAndShadowAssurance(object);
-      } else {
-        optimizeMeshHierarchy(object);
-        normalizeModelPosition(object, existingModels);
-      }
+      optimizeMeshHierarchy(object);
+      normalizeModelPosition(object, existingModels);
       const stats = calculateModelStats(object);
 
       const modelId = `model_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -380,7 +372,6 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
         name: filename,
         object,
         visible: true,
-        isScript: isThreeScript(filename),
         stats,
         animations,
       };
@@ -480,22 +471,19 @@ export function dispose3DObject(object: THREE.Object3D): void {
     disposedMaterials.add(mat.uuid);
 
     const matAny = mat as any;
-    // Explicit standard PBR texture map properties
+    // Dispose standard textures
     const textureProps = [
       'map',
-      'aoMap',
-      'alphaMap',
+      'lightMap',
       'bumpMap',
       'normalMap',
-      'displacementMap',
+      'specularMap',
+      'envMap',
+      'alphaMap',
       'roughnessMap',
       'metalnessMap',
       'emissiveMap',
-      'specularMap',
-      'specularColorMap',
-      'specularIntensityMap',
-      'envMap',
-      'lightMap',
+      'displacementMap',
       'clearcoatMap',
       'clearcoatRoughnessMap',
       'clearcoatNormalMap',
@@ -507,37 +495,18 @@ export function dispose3DObject(object: THREE.Object3D): void {
       'iridescenceThicknessMap',
       'anisotropyMap',
       'gradientMap',
-      'matcap',
     ];
 
     for (const prop of textureProps) {
-      if (matAny[prop]) {
-        disposeTexture(matAny[prop]);
-      }
-    }
-
-    // Traverse all keys on material to safely catch non-standard or dynamically attached textures
-    for (const key of Object.keys(matAny)) {
-      const val = matAny[key];
-      if (val && typeof val === 'object' && (val.isTexture || val.isWebGLRenderTarget)) {
-        disposeTexture(val);
-      }
+      disposeTexture(matAny[prop]);
     }
 
     // Check custom shader uniforms if any
     if (matAny.uniforms) {
       for (const key of Object.keys(matAny.uniforms)) {
         const val = matAny.uniforms[key]?.value;
-        if (val && typeof val === 'object') {
-          if (val.isTexture || val.isWebGLRenderTarget) {
-            disposeTexture(val);
-          } else if (Array.isArray(val)) {
-            val.forEach((item) => {
-              if (item && (item.isTexture || item.isWebGLRenderTarget)) {
-                disposeTexture(item);
-              }
-            });
-          }
+        if (val && (val.isTexture || val.isWebGLRenderTarget)) {
+          disposeTexture(val);
         }
       }
     }
@@ -575,596 +544,185 @@ export function dispose3DObject(object: THREE.Object3D): void {
 }
 
 /**
- * Captures stack traces, parses line/column numbers, and formats friendly error
- * notifications for TypeScript syntax and runtime execution errors.
+ * Dynamically transpiles and executes a Three.js TypeScript or JavaScript script.
+ * Sucrase is loaded dynamically only when a script is executed to maintain bundle splitting.
  */
-export function formatScriptError(
-  err: any,
-  filename: string,
-  stage: 'syntax' | 'runtime',
-  sourceCode?: string
-): Error {
-  const rawMessage = err?.message || String(err);
-  const stack = err?.stack || '';
-
-  let lineNumber: number | null = null;
-  let columnNumber: number | null = null;
-
-  // 1. Direct location properties from compiler (e.g. Sucrase err.loc = { line, column })
-  if (err?.loc && typeof err.loc.line === 'number') {
-    lineNumber = err.loc.line;
-    columnNumber = typeof err.loc.column === 'number' ? err.loc.column : null;
-  }
-
-  // 2. Parse (line:column) from message string
-  if (lineNumber === null) {
-    const locMatch = rawMessage.match(/\((\d+)[:,\s]+(\d+)\)/);
-    if (locMatch) {
-      lineNumber = parseInt(locMatch[1], 10);
-      columnNumber = parseInt(locMatch[2], 10);
-    }
-  }
-
-  // 3. Parse "line \d+" from message string
-  if (lineNumber === null) {
-    const lineMatch = rawMessage.match(/line\s+(\d+)/i);
-    if (lineMatch) {
-      lineNumber = parseInt(lineMatch[1], 10);
-    }
-  }
-
-  // 4. Parse stack trace lines:
-  // Look for frames referencing <anonymous>, Function, or eval
-  if (lineNumber === null && stack) {
-    const stackFrames = stack.split('\n');
-    for (const frame of stackFrames) {
-      const match = frame.match(/(?:<anonymous>|Function|eval)[^:]*:(\d+):(\d+)/i);
-      if (match) {
-        const rawLine = parseInt(match[1], 10);
-        const col = parseInt(match[2], 10);
-        // In new Function('THREE', ...), Chrome/V8 wraps code with a 2-line header
-        const adjustedLine = rawLine > 2 ? rawLine - 2 : rawLine;
-        lineNumber = adjustedLine;
-        columnNumber = col;
-        break;
-      }
-    }
-  }
-
-  const prefix = stage === 'syntax' ? 'TypeScript syntax error' : 'Runtime execution error';
-  const locString = lineNumber !== null 
-    ? ` (Line ${lineNumber}${columnNumber !== null ? `:${columnNumber}` : ''})` 
-    : '';
-
-  // Clean out redundant prefixes like "Error: ", "SyntaxError: ", "TypeError: "
-  const cleanedMsg = rawMessage.replace(/^(?:SyntaxError|TypeError|ReferenceError|RangeError|Error):\s*/i, '');
-  const formattedMsg = `${prefix} in "${filename}"${locString}: ${cleanedMsg}`;
-
-  const formattedErr = new Error(formattedMsg);
-  formattedErr.stack = stack;
-  return formattedErr;
-}
-
-/**
- * Traverses an Object3D hierarchy and ensures:
- * 1. Every mesh has castShadow = true and receiveShadow = true.
- * 2. If materials lack environment map intensity or roughness definitions,
- *    assigns sensible PBR defaults (roughness: 0.5, metalness: 0.1, envMapIntensity: 1.0)
- *    so procedural meshes never appear completely black or unlit.
- */
-export function applyMaterialAndShadowAssurance(object: THREE.Object3D): void {
-  object.traverse((child) => {
-    if (child instanceof THREE.Mesh || child instanceof THREE.Points || child instanceof THREE.Line) {
-      child.castShadow = true;
-      child.receiveShadow = true;
-      child.frustumCulled = true;
-
-      if (child.geometry) {
-        if (!child.geometry.boundingSphere) child.geometry.computeBoundingSphere();
-        if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
-      }
-
-      if (child.material) {
-        const materials = Array.isArray(child.material) ? child.material : [child.material];
-        materials.forEach((mat) => {
-          if (!mat) return;
-          const matAny = mat as any;
-
-          // If roughness is missing or undefined/NaN, assign PBR default 0.5
-          if (
-            matAny.roughness === undefined ||
-            matAny.roughness === null ||
-            typeof matAny.roughness !== 'number' ||
-            isNaN(matAny.roughness)
-          ) {
-            matAny.roughness = 0.5;
-          }
-
-          // If metalness is missing or undefined/NaN, assign PBR default 0.1
-          if (
-            matAny.metalness === undefined ||
-            matAny.metalness === null ||
-            typeof matAny.metalness !== 'number' ||
-            isNaN(matAny.metalness)
-          ) {
-            matAny.metalness = 0.1;
-          }
-
-          // If envMapIntensity is missing or undefined/NaN, assign default 1.0
-          if (
-            matAny.envMapIntensity === undefined ||
-            matAny.envMapIntensity === null ||
-            typeof matAny.envMapIntensity !== 'number' ||
-            isNaN(matAny.envMapIntensity)
-          ) {
-            matAny.envMapIntensity = 1.0;
-          }
-
-          mat.needsUpdate = true;
-        });
-      }
-    }
-  });
-}
-
-/**
- * Auto-centers horizontal axes (X, Z) and aligns base to Y=0 (grid floor)
- * for procedural script-generated groups.
- */
-export function alignAndCenterProceduralModel(loadedObject: THREE.Object3D): {
-  center: THREE.Vector3;
-  size: THREE.Vector3;
-  cameraDistance: number;
-} {
-  const box = new THREE.Box3().setFromObject(loadedObject);
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-
-  // Center horizontal axes (X, Z) and align base to Y=0 (grid floor)
-  loadedObject.position.x -= center.x;
-  loadedObject.position.z -= center.z;
-  loadedObject.position.y -= box.min.y;
-
-  const maxDim = Math.max(size.x, size.y, size.z) || 2;
-  const cameraDistance = maxDim * 2.0;
-
-  return { center, size, cameraDistance };
-}
-
-/**
- * Loads and dynamically executes a Three.js script (.ts or .js) with 100% plug-and-play
- * compatibility with img2threejs procedural files (such as kitchenModel.ts).
- *
- * Supports:
- * - Dynamic dependency loading of Sucrase
- * - TypeScript transpilation with CommonJS/ESM interop
- * - Universal Export Detection for img2threejs procedural models
- * - Auto-centering and Y=0 ground alignment
- * - Material & shadow assurance for procedural meshes
- * - Precise syntax and runtime error feedback with line numbers
- */
-export async function loadThreeJsScript(file: File): Promise<THREE.Object3D> {
-  const filename = file.name;
-  const code = await file.text();
-
-  // 1. Dynamic Dependency Loading: Sucrase is loaded dynamically only when a script is executed
-  let transform: any;
-  try {
-    const sucraseModule = await import('sucrase');
-    transform = sucraseModule.transform;
-  } catch (err: any) {
-    throw new Error(`TypeScript transpiler error: ${err?.message || err}`);
-  }
+export async function executeThreeScript(code: string, filename: string): Promise<THREE.Object3D> {
+  // 1. Dynamic Dependency Loading
+  const { transform } = await import('sucrase');
 
   // 2. TypeScript & CommonJS Module Transpilation
-  let transpiledCode: string;
+  let transpiled: string;
   try {
-    transpiledCode = transform(code, { transforms: ['typescript', 'imports'] }).code;
+    transpiled = transform(code, { transforms: ['typescript', 'imports'] }).code;
   } catch (err: any) {
-    throw formatScriptError(err, filename, 'syntax', code);
+    throw new Error(`Syntax error in "${filename}": ${err?.message || err}`);
   }
 
-  // 3. Robust Module Interop:
-  // Support `import * as THREE from 'three'`, `import THREE from 'three'`, and CommonJS `require('three')`
-  const threeExport = new Proxy(THREE, {
-    get(target, prop, receiver) {
-      if (prop === 'default') return THREE;
-      return Reflect.get(target, prop, receiver);
-    },
-  });
-  (threeExport as any).default = THREE;
-
-  if (typeof window !== 'undefined') {
-    (window as any).THREE = threeExport;
-  }
-
+  // Execution sandbox with mock require
   const customRequire = (moduleName: string) => {
-    if (moduleName === 'three' || moduleName.startsWith('three/') || moduleName.startsWith('three')) {
-      return threeExport;
-    }
+    if (moduleName === 'three' || moduleName.startsWith('three/')) return THREE;
     throw new Error(`Module "${moduleName}" cannot be resolved. Only "three" is supported.`);
   };
 
   const moduleObj: { exports: any } = { exports: {} };
   const exportsObj = moduleObj.exports;
 
-  // Execute transpiled script in sandbox
   try {
-    const fn = new Function('THREE', 'require', 'exports', 'module', transpiledCode);
-    fn(threeExport, customRequire, exportsObj, moduleObj);
+    const fn = new Function('THREE', 'require', 'exports', 'module', transpiled);
+    fn(THREE, customRequire, exportsObj, moduleObj);
   } catch (err: any) {
-    throw formatScriptError(err, filename, 'runtime', code);
+    throw new Error(`Execution error in "${filename}": ${err?.message || err}`);
   }
 
-  // 4. Universal Export Detection for img2threejs procedural files:
-  // Support multiple export styles:
-  // a. module.exports.default
-  // b. Named functions such as createModel, createKitchenModel, buildScene, or any function starting with create or generate
-  // c. Iterate through all keys in module.exports and if a property is a function returning an instance of THREE.Object3D or THREE.Group, invoke it.
-  // d. Handle cases where the export is an instantiated THREE.Object3D directly instead of a factory function.
-  // e. Support async factories: const model = await Promise.resolve(candidateExport(THREE));
+  // 3. Extract model from module.exports.default, named export functions (e.g., createModel(), default()),
+  // or direct Object3D exports. Ensure output instanceof THREE.Object3D.
+  let output: any = null;
+  const modExports = moduleObj.exports;
 
-  interface ExportCandidate {
-    name: string;
-    value: any;
-    priority: number;
-    isNamedFactory?: boolean;
-  }
-
-  const candidates: ExportCandidate[] = [];
-
-  const inspectExportContainer = (container: any, sourceLabel: string) => {
-    if (!container) return;
-
-    // Direct Object3D instance
-    if (container instanceof THREE.Object3D) {
-      candidates.push({ name: sourceLabel, value: container, priority: 100 });
-      return;
-    }
-
-    // Direct factory function
-    if (typeof container === 'function') {
-      candidates.push({ name: sourceLabel, value: container, priority: 95, isNamedFactory: true });
-      return;
-    }
-
-    if (typeof container === 'object') {
-      // 1. Check .default first
-      if (container.default !== undefined) {
-        if (container.default instanceof THREE.Object3D) {
-          candidates.push({ name: 'default', value: container.default, priority: 96 });
-        } else if (typeof container.default === 'function') {
-          candidates.push({ name: 'default', value: container.default, priority: 95, isNamedFactory: true });
-        } else if (typeof container.default === 'object' && container.default !== null) {
-          // If default is an object of named functions (e.g. export default { createKitchenModel })
-          for (const [subKey, subVal] of Object.entries(container.default)) {
-            if (subVal instanceof THREE.Object3D) {
-              candidates.push({ name: `default.${subKey}`, value: subVal, priority: 85 });
-            } else if (typeof subVal === 'function') {
-              const isMatch = /^(create|generate|build|make|init|setup|render)/i.test(subKey);
-              candidates.push({
-                name: `default.${subKey}`,
-                value: subVal,
-                priority: isMatch ? 90 : 70,
-                isNamedFactory: true,
-              });
+  if (modExports instanceof THREE.Object3D) {
+    output = modExports;
+  } else if (typeof modExports === 'function') {
+    output = modExports();
+  } else if (modExports && typeof modExports === 'object') {
+    if (modExports.default instanceof THREE.Object3D) {
+      output = modExports.default;
+    } else if (typeof modExports.default === 'function') {
+      output = modExports.default();
+    } else if (typeof modExports.createModel === 'function') {
+      output = modExports.createModel();
+    } else if (modExports.model instanceof THREE.Object3D) {
+      output = modExports.model;
+    } else if (typeof modExports.model === 'function') {
+      output = modExports.model();
+    } else if (modExports.scene instanceof THREE.Object3D) {
+      output = modExports.scene;
+    } else {
+      // Check other exported properties or functions
+      for (const key of Object.keys(modExports)) {
+        if (key === '__esModule') continue;
+        const candidate = modExports[key];
+        if (candidate instanceof THREE.Object3D) {
+          output = candidate;
+          break;
+        } else if (typeof candidate === 'function') {
+          try {
+            const res = candidate();
+            if (res instanceof THREE.Object3D || res instanceof Promise) {
+              output = res;
+              break;
             }
+          } catch {
+            // Non-instantiating function, proceed to next
           }
         }
       }
-
-      // 2. Iterate through all keys in container (img2threejs procedural files)
-      for (const [key, val] of Object.entries(container)) {
-        if (key === '__esModule' || key === 'default') continue;
-        if (val === undefined || val === null) continue;
-
-        if (val instanceof THREE.Object3D) {
-          // d. Handle cases where the export is an instantiated THREE.Object3D directly
-          candidates.push({ name: key, value: val, priority: 82 });
-        } else if (typeof val === 'function') {
-          // b. Named functions such as createModel, createKitchenModel, buildScene, or any function starting with create or generate
-          const isExactImg2ThreeMatch = /^(createModel|createKitchenModel|buildScene|generateMesh|model|scene|kitchenModel)$/i.test(key);
-          const isPrefixMatch = /^(create|generate|build|make|init|setup|render)/i.test(key);
-
-          const priority = isExactImg2ThreeMatch ? 93 : isPrefixMatch ? 89 : 65;
-          candidates.push({ name: key, value: val, priority, isNamedFactory: true });
-        }
-      }
-    }
-  };
-
-  inspectExportContainer(moduleObj.exports, 'module.exports');
-  if (exportsObj && exportsObj !== moduleObj.exports) {
-    inspectExportContainer(exportsObj, 'exports');
-  }
-
-  // Sort candidates by descending priority
-  candidates.sort((a, b) => b.priority - a.priority);
-
-  let finalResult: THREE.Object3D | null = null;
-  let factoryRuntimeError: Error | null = null;
-
-  for (const cand of candidates) {
-    try {
-      let result = cand.value;
-
-      if (typeof result === 'function') {
-        try {
-          result = result(threeExport);
-        } catch (invokeErr: any) {
-          if (typeof invokeErr?.message === 'string' && invokeErr.message.includes('without \'new\'')) {
-            result = new (result as any)(threeExport);
-          } else {
-            throw invokeErr;
-          }
-        }
-      }
-
-      // e. Support async factories
-      result = await Promise.resolve(result);
-
-      // c. If a property is a function returning an instance of THREE.Object3D or THREE.Group, accept it
-      if (result instanceof THREE.Object3D) {
-        finalResult = result;
-        break;
-      }
-    } catch (evalErr: any) {
-      const formatted = formatScriptError(evalErr, filename, 'runtime', code);
-      if (cand.isNamedFactory && cand.priority >= 85) {
-        // High confidence factory function threw during execution: surface the error
-        throw formatted;
-      }
-      factoryRuntimeError = formatted;
     }
   }
 
-  // Check if no valid THREE.Object3D was returned
-  if (!finalResult) {
-    if (factoryRuntimeError) {
-      throw factoryRuntimeError;
-    }
+  // Support async function / Promise returning THREE.Object3D
+  if (output instanceof Promise) {
+    output = await output;
+  }
+
+  if (!(output instanceof THREE.Object3D)) {
     throw new Error(
-      `Missing Object3D export in "${filename}": Script did not return or export a valid THREE.Object3D or THREE.Group. Ensure your script exports a model (e.g., "export function createKitchenModel(): THREE.Group", "export default createModel", or "export const scene = new THREE.Group()").`
+      `No valid THREE.Object3D is returned from "${filename}". Make sure to export a THREE.Object3D instance or a function like "export default () => new THREE.Mesh(...)" or "export function createModel()".`
     );
   }
 
-  // Tag procedural script
-  finalResult.userData.isScript = true;
-  finalResult.userData.isProcedural = true;
-
-  // 3. Material & Shadow Assurance:
-  // Ensure every mesh has castShadow = true and receiveShadow = true,
-  // and assign sensible PBR defaults (roughness: 0.5, metalness: 0.1) so meshes don't appear black or unlit.
-  applyMaterialAndShadowAssurance(finalResult);
-
-  // 2. Auto-centering & Ground Alignment:
-  // Center horizontal axes (X, Z) and align base to Y=0 (grid floor)
-  alignAndCenterProceduralModel(finalResult);
-
-  return finalResult;
+  return output;
 }
 
 /**
- * Dynamically transpiles and executes a Three.js TypeScript or JavaScript script.
- */
-export async function executeThreeScript(code: string, filename: string): Promise<THREE.Object3D> {
-  const file = new File([code], filename, { type: 'application/typescript' });
-  return loadThreeJsScript(file);
-}
-
-/**
- * Creates a sample TypeScript script file matching img2threejs procedural files
- * (such as kitchenModel.ts) with full PBR materials, shadows, and universal exports.
+ * Creates a sample TypeScript script file that dynamically creates a procedural 3D sculpture.
  */
 export function createSampleScriptFile(): File {
   const sampleScript = `import * as THREE from 'three';
 
 /**
- * Procedural Modern Luxury Kitchen Model
- * Generated dynamically via img2threejs procedural script format!
+ * Procedural Cyber Crystal with Quantum Orbital Rings
+ * Generated dynamically via Three.js TypeScript execution!
  */
-export function createKitchenModel(): THREE.Group {
-  const kitchen = new THREE.Group();
-  kitchen.name = 'Luxury_Kitchen_Group';
+export function createModel(): THREE.Object3D {
+  const group = new THREE.Group();
+  group.name = 'CyberCrystal_TS_Group';
 
-  // 1. Lower Base Cabinets
-  const baseCabinetGeo = new THREE.BoxGeometry(3.6, 0.9, 0.7);
-  const cabinetMat = new THREE.MeshStandardMaterial({
-    color: 0x1e293b,
-    roughness: 0.35,
-    metalness: 0.15,
-  });
-  const baseCabinets = new THREE.Mesh(baseCabinetGeo, cabinetMat);
-  baseCabinets.position.set(0, 0.45, 0);
-  baseCabinets.castShadow = true;
-  baseCabinets.receiveShadow = true;
-  kitchen.add(baseCabinets);
-
-  // Cabinet Doors & Drawer Paneling Accents
-  for (let i = 0; i < 4; i++) {
-    const doorGeo = new THREE.BoxGeometry(0.82, 0.8, 0.03);
-    const doorMat = new THREE.MeshStandardMaterial({
-      color: 0x0f172a,
-      roughness: 0.4,
-      metalness: 0.1,
-    });
-    const door = new THREE.Mesh(doorGeo, doorMat);
-    door.position.set(-1.35 + i * 0.9, 0.45, 0.365);
-    door.castShadow = true;
-    kitchen.add(door);
-
-    // Brushed Brass Handles
-    const handleGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.25, 16);
-    const handleMat = new THREE.MeshStandardMaterial({
-      color: 0xd4af37,
-      roughness: 0.2,
-      metalness: 0.9,
-    });
-    const handle = new THREE.Mesh(handleGeo, handleMat);
-    handle.position.set(-1.35 + i * 0.9, 0.72, 0.39);
-    handle.rotation.z = Math.PI / 2;
-    handle.castShadow = true;
-    kitchen.add(handle);
-  }
-
-  // 2. Calacatta Gold Marble Countertop Slab
-  const counterGeo = new THREE.BoxGeometry(3.8, 0.08, 0.85);
-  const counterMat = new THREE.MeshStandardMaterial({
-    color: 0xf8fafc,
-    roughness: 0.15,
-    metalness: 0.05,
-  });
-  const countertop = new THREE.Mesh(counterGeo, counterMat);
-  countertop.position.set(0, 0.94, 0.04);
-  countertop.castShadow = true;
-  countertop.receiveShadow = true;
-  kitchen.add(countertop);
-
-  // 3. Stainless Steel Undermount Sink
-  const sinkRimGeo = new THREE.BoxGeometry(0.9, 0.02, 0.55);
-  const stainlessMat = new THREE.MeshStandardMaterial({
-    color: 0xe2e8f0,
-    roughness: 0.18,
-    metalness: 0.92,
-  });
-  const sinkRim = new THREE.Mesh(sinkRimGeo, stainlessMat);
-  sinkRim.position.set(-0.85, 0.985, 0.04);
-  sinkRim.castShadow = true;
-  kitchen.add(sinkRim);
-
-  const sinkBasinGeo = new THREE.BoxGeometry(0.78, 0.25, 0.44);
-  const sinkBasinMat = new THREE.MeshStandardMaterial({
-    color: 0x64748b,
-    roughness: 0.22,
-    metalness: 0.88,
-  });
-  const sinkBasin = new THREE.Mesh(sinkBasinGeo, sinkBasinMat);
-  sinkBasin.position.set(-0.85, 0.86, 0.04);
-  kitchen.add(sinkBasin);
-
-  // 4. Arched Chrome Commercial Gooseneck Faucet
-  const faucetGroup = new THREE.Group();
-  faucetGroup.position.set(-0.85, 0.98, -0.15);
-
-  const faucetBaseGeo = new THREE.CylinderGeometry(0.025, 0.03, 0.08, 16);
-  const faucetMat = new THREE.MeshStandardMaterial({
-    color: 0xf1f5f9,
+  // 1. Central Prismatic Core
+  const coreGeo = new THREE.OctahedronGeometry(1.2, 0);
+  const coreMat = new THREE.MeshPhysicalMaterial({
+    color: 0x38bdf8,
+    emissive: 0x0369a1,
+    emissiveIntensity: 0.35,
     roughness: 0.08,
-    metalness: 0.95,
+    metalness: 0.2,
+    transmission: 0.65,
+    ior: 1.52,
+    thickness: 1.5,
   });
-  const faucetBase = new THREE.Mesh(faucetBaseGeo, faucetMat);
-  faucetBase.position.y = 0.04;
-  faucetBase.castShadow = true;
-  faucetGroup.add(faucetBase);
+  const core = new THREE.Mesh(coreGeo, coreMat);
+  core.position.y = 1.5;
+  core.castShadow = true;
+  group.add(core);
 
-  const faucetStemGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.32, 16);
-  const faucetStem = new THREE.Mesh(faucetStemGeo, faucetMat);
-  faucetStem.position.y = 0.2;
-  faucetStem.castShadow = true;
-  faucetGroup.add(faucetStem);
-
-  const faucetArcGeo = new THREE.TorusGeometry(0.09, 0.014, 16, 32, Math.PI);
-  const faucetArc = new THREE.Mesh(faucetArcGeo, faucetMat);
-  faucetArc.position.set(0, 0.36, 0.09);
-  faucetArc.rotation.y = Math.PI / 2;
-  faucetArc.castShadow = true;
-  faucetGroup.add(faucetArc);
-
-  kitchen.add(faucetGroup);
-
-  // 5. Induction Glass Cooktop with Illuminated Burner Rings
-  const cooktopGeo = new THREE.BoxGeometry(0.9, 0.015, 0.58);
-  const cooktopMat = new THREE.MeshStandardMaterial({
-    color: 0x09090b,
-    roughness: 0.1,
-    metalness: 0.8,
+  // 2. Translucent Faceted Outer Cage
+  const cageGeo = new THREE.IcosahedronGeometry(1.45, 1);
+  const cageMat = new THREE.MeshBasicMaterial({
+    color: 0x818cf8,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.5,
   });
-  const cooktop = new THREE.Mesh(cooktopGeo, cooktopMat);
-  cooktop.position.set(0.85, 0.985, 0.04);
-  cooktop.castShadow = true;
-  kitchen.add(cooktop);
+  const cage = new THREE.Mesh(cageGeo, cageMat);
+  cage.position.y = 1.5;
+  group.add(cage);
 
-  // 4 Burner Induction Rings
-  const burnerCoords = [
-    [-0.24, -0.14, 0.12],
-    [-0.24, 0.14, 0.09],
-    [0.24, -0.14, 0.1],
-    [0.24, 0.14, 0.13],
-  ];
-  burnerCoords.forEach(([bx, bz, r]) => {
-    const ringGeo = new THREE.RingGeometry(r - 0.015, r, 32);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xef4444,
-      side: THREE.DoubleSide,
-    });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(0.85 + bx, 0.995, 0.04 + bz);
-    kitchen.add(ring);
+  // 3. Orbital Gyroscope Rings
+  const ringGeo = new THREE.TorusGeometry(1.9, 0.045, 16, 100);
+  
+  const ring1 = new THREE.Mesh(
+    ringGeo,
+    new THREE.MeshStandardMaterial({
+      color: 0xf43f5e,
+      roughness: 0.2,
+      metalness: 0.85,
+    })
+  );
+  ring1.position.y = 1.5;
+  ring1.rotation.x = Math.PI / 3;
+  group.add(ring1);
+
+  const ring2 = new THREE.Mesh(
+    ringGeo,
+    new THREE.MeshStandardMaterial({
+      color: 0x10b981,
+      roughness: 0.2,
+      metalness: 0.85,
+    })
+  );
+  ring2.position.y = 1.5;
+  ring2.rotation.y = Math.PI / 3;
+  group.add(ring2);
+
+  // 4. Futuristic Base Pedestal
+  const baseGeo = new THREE.CylinderGeometry(1.4, 1.7, 0.3, 32);
+  const baseMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.3,
+    metalness: 0.6,
   });
+  const base = new THREE.Mesh(baseGeo, baseMat);
+  base.position.y = 0.15;
+  base.receiveShadow = true;
+  group.add(base);
 
-  // 6. Modern Wall-Mounted Range Hood
-  const hoodGroup = new THREE.Group();
-  hoodGroup.position.set(0.85, 1.85, 0.04);
-
-  const hoodCanopyGeo = new THREE.CylinderGeometry(0.25, 0.52, 0.28, 4);
-  const hoodMat = new THREE.MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.25,
-    metalness: 0.85,
-  });
-  const hoodCanopy = new THREE.Mesh(hoodCanopyGeo, hoodMat);
-  hoodCanopy.rotation.y = Math.PI / 4;
-  hoodCanopy.castShadow = true;
-  hoodGroup.add(hoodCanopy);
-
-  const chimneyGeo = new THREE.BoxGeometry(0.35, 0.9, 0.3);
-  const chimney = new THREE.Mesh(chimneyGeo, hoodMat);
-  chimney.position.y = 0.55;
-  chimney.castShadow = true;
-  hoodGroup.add(chimney);
-
-  kitchen.add(hoodGroup);
-
-  // 7. Full-Height French-Door Refrigerator
-  const fridgeGroup = new THREE.Group();
-  fridgeGroup.position.set(2.4, 1.05, 0.08);
-
-  const fridgeBodyGeo = new THREE.BoxGeometry(0.95, 2.1, 0.78);
-  const fridgeMat = new THREE.MeshStandardMaterial({
-    color: 0x475569,
-    roughness: 0.2,
-    metalness: 0.9,
-  });
-  const fridgeBody = new THREE.Mesh(fridgeBodyGeo, fridgeMat);
-  fridgeBody.castShadow = true;
-  fridgeBody.receiveShadow = true;
-  fridgeGroup.add(fridgeBody);
-
-  // Refrigerator Handles
-  const fridgeHandleGeo = new THREE.CylinderGeometry(0.014, 0.014, 0.7, 16);
-  const handleL = new THREE.Mesh(fridgeHandleGeo, handleMat);
-  handleL.position.set(-0.06, 0.25, 0.42);
-  handleL.castShadow = true;
-  fridgeGroup.add(handleL);
-
-  const handleR = new THREE.Mesh(fridgeHandleGeo, handleMat);
-  handleR.position.set(0.06, 0.25, 0.42);
-  handleR.castShadow = true;
-  fridgeGroup.add(handleR);
-
-  kitchen.add(fridgeGroup);
-
-  return kitchen;
+  return group;
 }
 
-// Support multiple export patterns standard in img2threejs
-export const createModel = createKitchenModel;
-export const buildScene = createKitchenModel;
-export default createKitchenModel;
+export default createModel;
 `;
 
-  return new File([sampleScript], 'kitchenModel.ts', {
+  return new File([sampleScript], 'Procedural_CyberCrystal.ts', {
     type: 'application/typescript',
   });
 }

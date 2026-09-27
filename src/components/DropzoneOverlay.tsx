@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import { UploadCloud, FileCode2, Box, Code2 } from 'lucide-react';
 import { ACCEPTED_FILE_EXTENSIONS } from '../types';
 
@@ -8,7 +8,6 @@ interface DropzoneOverlayProps {
   onOpenFileInput: () => void;
   onLoadDemo: () => void;
   onLoadSampleScript?: () => void;
-  onFilesSelected?: (files: FileList | File[]) => void;
 }
 
 export const DropzoneOverlay: React.FC<DropzoneOverlayProps> = ({
@@ -17,55 +16,21 @@ export const DropzoneOverlay: React.FC<DropzoneOverlayProps> = ({
   onOpenFileInput,
   onLoadDemo,
   onLoadSampleScript,
-  onFilesSelected,
 }) => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const handleOpenPicker = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    } else {
-      onOpenFileInput();
-    }
-  };
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      handleOpenPicker();
-    }
-  };
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      if (onFilesSelected) {
-        onFilesSelected(e.target.files);
-      } else {
-        onOpenFileInput();
-      }
-      e.target.value = '';
+      onOpenFileInput();
     }
   };
 
   return (
     <>
-      {/* Hidden File Input for Direct Dropzone Access */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept={ACCEPTED_FILE_EXTENSIONS}
-        multiple
-        onChange={handleFileInputChange}
-        className="hidden"
-        aria-hidden="true"
-        tabIndex={-1}
-      />
-
       {/* Drag & Drop Visual Overlay */}
       <div
         tabIndex={0}
-        role="button"
-        aria-label="Upload 3D files or Three.js scripts"
+        role="region"
+        aria-label="Upload 3D model or Three.js script"
         onKeyDown={handleKeyDown}
         className={`absolute inset-0 bg-slate-950/85 backdrop-blur-md z-40 flex flex-col items-center justify-center border-4 border-dashed border-blue-500/60 m-6 rounded-3xl transition-all duration-200 pointer-events-none ${
           isDragging ? 'opacity-100 scale-100' : 'opacity-0 scale-95'
@@ -110,10 +75,10 @@ export const DropzoneOverlay: React.FC<DropzoneOverlayProps> = ({
       {modelCount === 0 && !isDragging && (
         <div
           tabIndex={0}
-          role="button"
-          aria-label="Upload 3D files or Three.js scripts"
+          role="region"
+          aria-label="Upload 3D model or Three.js script"
           onKeyDown={handleKeyDown}
-          className="absolute inset-0 flex flex-col items-center justify-center z-10 pointer-events-none p-6 text-center focus:outline-none focus:ring-2 focus:ring-blue-500/60 rounded-3xl"
+          className="absolute inset-0 flex flex-col items-center justify-center z-10 pointer-events-none p-6 text-center focus:outline-none"
         >
           <div className="glass-panel p-8 rounded-3xl max-w-lg pointer-events-auto border border-slate-700/60 shadow-2xl space-y-4 focus:ring-2 focus:ring-blue-500/50">
             <div className="w-16 h-16 rounded-2xl bg-blue-600/20 text-blue-400 flex items-center justify-center mx-auto text-2xl border border-blue-500/30 shadow-inner">
@@ -130,7 +95,7 @@ export const DropzoneOverlay: React.FC<DropzoneOverlayProps> = ({
             <div className="flex flex-wrap gap-2.5 justify-center pt-2">
               <button
                 type="button"
-                onClick={handleOpenPicker}
+                onClick={onOpenFileInput}
                 className="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs px-4 py-2.5 rounded-xl transition shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
               >
                 <FileCode2 className="w-4 h-4" />

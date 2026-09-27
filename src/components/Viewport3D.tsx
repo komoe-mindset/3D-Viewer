@@ -11,7 +11,7 @@ import {
   RenderMode,
   CameraView,
 } from '../types';
-import { dispose3DObject, applyMaterialAndShadowAssurance, isThreeScript } from '../utils/modelLoaders';
+import { dispose3DObject } from '../utils/modelLoaders';
 
 interface Viewport3DProps {
   models: LoadedModel[];
@@ -93,9 +93,6 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
 
     // Track previously mounted model Object3D instances for safe GPU memory disposal
     const prevModelsMapRef = useRef<Map<string, THREE.Object3D>>(new Map());
-
-    // Track procedural script models that have had auto-centering and camera framing applied
-    const centeredScriptModelIdsRef = useRef<Set<string>>(new Set());
 
     // Camera target position transition ref
     const targetCameraPos = useRef<THREE.Vector3 | null>(null);
@@ -577,10 +574,6 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
 
           transformControls.dispose();
           renderer.dispose();
-          prevModelsMapRef.current.forEach((obj) => {
-            dispose3DObject(obj);
-          });
-          prevModelsMapRef.current.clear();
           scene.clear();
         }
       };
@@ -647,61 +640,6 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
           scene.add(model.object);
         }
         model.object.visible = model.visible;
-
-        const isScript = model.isScript || model.object.userData.isScript || isThreeScript(model.name);
-        if (isScript && !centeredScriptModelIdsRef.current.has(model.id)) {
-          centeredScriptModelIdsRef.current.add(model.id);
-
-          const loadedObject = model.object;
-          // Calculate the bounding box:
-          const box = new THREE.Box3().setFromObject(loadedObject);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
-
-          // Center horizontal axes (X, Z) and align base to Y=0 (grid floor)
-          loadedObject.position.x -= center.x;
-          loadedObject.position.z -= center.z;
-          loadedObject.position.y -= box.min.y;
-
-          // Adjust orbit controls and camera distance automatically according to the maximum dimension of the bounding box
-          const maxDim = Math.max(size.x, size.y, size.z) || 2;
-          const cameraDistance = maxDim * 2.0;
-
-          const updatedBox = new THREE.Box3().setFromObject(loadedObject);
-          const updatedCenter = updatedBox.getCenter(new THREE.Vector3());
-
-          const { controls, camera, orthoCamera } = threeRef.current;
-          controls.target.copy(updatedCenter);
-
-          const viewDir = new THREE.Vector3(0.65, 0.45, 0.9).normalize();
-          const targetCamPos = updatedCenter.clone().addScaledVector(viewDir, cameraDistance);
-
-          camera.position.copy(targetCamPos);
-          orthoCamera.position.copy(targetCamPos);
-          camera.lookAt(controls.target);
-          orthoCamera.lookAt(controls.target);
-          controls.update();
-
-          if (propsRef.current.onTransformChange && model.id === selectedModelId) {
-            propsRef.current.onTransformChange({
-              posX: loadedObject.position.x,
-              posY: loadedObject.position.y,
-              posZ: loadedObject.position.z,
-              rotX: THREE.MathUtils.radToDeg(loadedObject.rotation.x),
-              rotY: THREE.MathUtils.radToDeg(loadedObject.rotation.y),
-              rotZ: THREE.MathUtils.radToDeg(loadedObject.rotation.z),
-              scaleX: loadedObject.scale.x,
-              scaleY: loadedObject.scale.y,
-              scaleZ: loadedObject.scale.z,
-            });
-          }
-        }
-
-        // Material & Shadow Assurance:
-        // Traverse the generated object hierarchy and ensure every mesh has castShadow = true and receiveShadow = true.
-        // If materials lack environment map intensity or roughness definitions, assign sensible PBR defaults
-        // (roughness: 0.5, metalness: 0.1) so procedural meshes do not appear completely black or unlit.
-        applyMaterialAndShadowAssurance(model.object);
 
         model.object.traverse((child) => {
           if (child instanceof THREE.Mesh || child instanceof THREE.Points || child instanceof THREE.Line) {
@@ -997,8 +935,7 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
         const maxDim = Math.max(size.x, size.y, size.z) || 2;
 
         const fov = camera.fov * (Math.PI / 180);
-        const isScript = targetModel.isScript || targetModel.object.userData.isScript || isThreeScript(targetModel.name);
-        let dist = isScript ? maxDim * 2.0 : Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.8;
+        let dist = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.8;
         dist = Math.max(dist, 2.5);
 
         targetCameraPos.current = new THREE.Vector3(
