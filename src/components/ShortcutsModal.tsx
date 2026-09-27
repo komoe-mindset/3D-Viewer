@@ -27,30 +27,39 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 select-none">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="shortcuts-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 select-none"
+    >
       <div className="w-full max-w-md rounded-2xl p-5 bg-[#202020]/95 border border-[#3a3a3a] shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150 text-slate-200">
         <div className="flex items-center justify-between pb-3 border-b border-[#333333]">
-          <div className="flex items-center gap-2 text-white font-semibold text-sm">
-            <Keyboard className="w-4 h-4 text-[#ea7600]" />
+          <div id="shortcuts-title" className="flex items-center gap-2 text-white font-semibold text-sm">
+            <Keyboard className="w-4 h-4 text-[#ea7600]" aria-hidden="true" />
             <span>Blender 3D Viewport Shortcuts</span>
           </div>
           <button
             type="button"
+            role="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-[#2e2e2e] transition cursor-pointer"
+            aria-label="Close shortcuts modal"
+            title="Close (Escape)"
+            className="p-1 rounded-lg text-slate-300 hover:text-white hover:bg-[#2e2e2e] transition cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
 
-        <div className="space-y-1.5 max-h-84 overflow-y-auto pr-1">
+        <div className="space-y-1.5 max-h-84 overflow-y-auto pr-1" role="list" aria-label="Available keyboard and mouse shortcuts">
           {shortcuts.map((item, idx) => (
             <div
               key={idx}
+              role="listitem"
               className="flex items-center justify-between p-2 rounded-lg bg-[#282828] border border-[#333333] text-xs"
             >
-              <span className="text-slate-300">{item.desc}</span>
-              <kbd className="px-2 py-0.5 rounded bg-[#181818] border border-[#3a3a3a] font-mono text-[11px] font-semibold text-[#ea7600] shadow-sm shrink-0 ml-2">
+              <span className="text-slate-200">{item.desc}</span>
+              <kbd className="px-2 py-0.5 rounded bg-[#181818] border border-[#3a3a3a] font-mono text-[11px] font-semibold text-amber-300 shadow-sm shrink-0 ml-2">
                 {item.key}
               </kbd>
             </div>
@@ -60,8 +69,11 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
         <div className="pt-2 text-center">
           <button
             type="button"
+            role="button"
             onClick={onClose}
-            className="w-full py-2 bg-[#ea7600] hover:bg-[#ff8811] text-white font-medium text-xs rounded-xl shadow-lg shadow-[#ea7600]/25 transition cursor-pointer"
+            aria-label="Dismiss shortcuts modal"
+            title="Dismiss"
+            className="w-full py-2 bg-[#ea7600] hover:bg-[#ff8811] text-white font-medium text-xs rounded-xl shadow-lg shadow-[#ea7600]/25 transition cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
           >
             Got it
           </button>

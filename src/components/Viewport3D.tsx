@@ -11,7 +11,7 @@ import {
   RenderMode,
   CameraView,
 } from '../types';
-import { dispose3DObject } from '../utils/modelLoaders';
+import { dispose3DObject, disposeSceneHierarchy } from '../utils/modelLoaders';
 
 interface Viewport3DProps {
   models: LoadedModel[];
@@ -36,6 +36,7 @@ interface Viewport3DProps {
   onSelectModel: (id: string | null) => void;
   onTransformChange: (values: Partial<TransformValues>) => void;
   onFpsUpdate?: (fps: number) => void;
+  onToast?: (message: string, type: 'info' | 'success' | 'error') => void;
   cameraQuaternionRef?: React.MutableRefObject<THREE.Quaternion>;
 }
 
@@ -75,6 +76,7 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
       onSelectModel,
       onTransformChange,
       onFpsUpdate,
+      onToast,
       cameraQuaternionRef,
     },
     ref
@@ -82,10 +84,13 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
-    // On-demand rendering request frame counter
+    // On-demand rendering request frame counter and loop wake function
     const needsRenderRef = useRef<number>(3);
-    const requestRender = useCallback(() => {
-      needsRenderRef.current = Math.max(needsRenderRef.current, 3);
+    const wakeLoopRef = useRef<() => void>(() => {});
+
+    const requestRender = useCallback((frames = 3) => {
+      needsRenderRef.current = Math.max(needsRenderRef.current, frames);
+      wakeLoopRef.current();
     }, []);
 
     // Track override materials created for custom render modes (wireframe/normals/xray/points)
@@ -136,6 +141,7 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
       rotateSpeed,
       onFpsUpdate,
       isAnimPlaying,
+      onToast,
     });
 
     useEffect(() => {
@@ -150,6 +156,7 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
         rotateSpeed,
         onFpsUpdate,
         isAnimPlaying,
+        onToast,
       };
       requestRender();
     });
@@ -443,37 +450,85 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
       });
       resizeObserver.observe(containerRef.current);
 
-      // On-Demand & Continuous Adaptive Render Loop
-      let animId: number;
+      // WebGL Context Lost and Restored Event Handling
+      const handleContextLost = (event: Event) => {
+        event.preventDefault(); // Prevents browser from abandoning WebGL context
+        console.warn('WebGL context lost.');
+
+        if (animId !== null) {
+          cancelAnimationFrame(animId);
+          animId = null;
+        }
+        isLoopRunning = false;
+
+        propsRef.current.onToast?.(
+          'WebGL graphics context was lost due to GPU memory pressure or system power state. Pausing rendering and awaiting recovery...',
+          'error'
+        );
+      };
+
+      const handleContextRestored = () => {
+        console.info('WebGL context restored.');
+
+        propsRef.current.onToast?.(
+          'WebGL graphics context successfully restored! Viewport re-initialized.',
+          'success'
+        );
+
+        requestRender(5);
+      };
+
+      canvas.addEventListener('webglcontextlost', handleContextLost, false);
+      canvas.addEventListener('webglcontextrestored', handleContextRestored, false);
+
+      // On-Demand Adaptive Render Loop
+      let animId: number | null = null;
+      let isLoopRunning = false;
+
       const animate = () => {
-        animId = requestAnimationFrame(animate);
+        if (!threeRef.current) {
+          isLoopRunning = false;
+          animId = null;
+          return;
+        }
+
+        const {
+          scene,
+          camera,
+          renderer,
+          controls,
+          transformControls,
+          clock,
+          mixer,
+        } = threeRef.current;
 
         const isAutoRotating = propsRef.current.autoRotate && propsRef.current.models.length > 0;
-        const isPlayingAnim = propsRef.current.isAnimPlaying && !!threeRef.current?.mixer;
+        const isPlayingAnim = propsRef.current.isAnimPlaying && !!mixer;
         const isLerping = !!targetCameraPos.current || !!targetControlsTarget.current;
         const isInteracting =
-          (threeRef.current?.controls as any)?.state !== -1 ||
-          (threeRef.current?.transformControls as any)?.dragging;
+          (controls as any)?.state !== -1 ||
+          (transformControls as any)?.dragging;
+
+        // Damping update: returns true if camera/target is actively moving, false when settled/idle
+        const controlsDampingActive = controls.update();
+
+        const hasDirtyFrames = needsRenderRef.current > 0;
+        if (needsRenderRef.current > 0) {
+          needsRenderRef.current--;
+        }
 
         const shouldRender =
           isAutoRotating ||
           isPlayingAnim ||
           isLerping ||
           isInteracting ||
-          needsRenderRef.current > 0;
+          controlsDampingActive ||
+          hasDirtyFrames;
 
-        if (needsRenderRef.current > 0) {
-          needsRenderRef.current--;
-        }
+        if (shouldRender) {
+          const delta = clock.getDelta();
 
-        if (!shouldRender) {
-          return;
-        }
-
-        const delta = clock.getDelta();
-
-        // FPS Calculation
-        if (threeRef.current) {
+          // FPS Calculation
           threeRef.current.frameCount++;
           const now = performance.now();
           if (now - threeRef.current.lastTime >= 500) {
@@ -486,95 +541,97 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
             threeRef.current.frameCount = 0;
             threeRef.current.lastTime = now;
           }
-        }
 
-        const currentActiveCam = threeRef.current?.activeCamera || camera;
+          const currentActiveCam = threeRef.current?.activeCamera || camera;
 
-        // Smooth camera transition if active
-        if (targetCameraPos.current && targetControlsTarget.current) {
-          currentActiveCam.position.lerp(targetCameraPos.current, 0.14);
-          controls.target.lerp(targetControlsTarget.current, 0.14);
+          // Smooth camera transition if active
+          if (targetCameraPos.current && targetControlsTarget.current) {
+            currentActiveCam.position.lerp(targetCameraPos.current, 0.14);
+            controls.target.lerp(targetControlsTarget.current, 0.14);
 
-          if (
-            currentActiveCam.position.distanceTo(targetCameraPos.current) < 0.005 &&
-            controls.target.distanceTo(targetControlsTarget.current) < 0.005
-          ) {
-            currentActiveCam.position.copy(targetCameraPos.current);
-            controls.target.copy(targetControlsTarget.current);
-            targetCameraPos.current = null;
-            targetControlsTarget.current = null;
-          }
-          requestRender();
-        }
-
-        // Update ViewportGizmo quaternion ref
-        if (cameraQuaternionRef) {
-          cameraQuaternionRef.current.copy(currentActiveCam.quaternion);
-        }
-
-        // Update animation mixer if playing
-        if (isPlayingAnim && threeRef.current?.mixer) {
-          threeRef.current.mixer.update(delta);
-          requestRender();
-        }
-
-        // Auto rotate logic
-        if (isAutoRotating) {
-          propsRef.current.models.forEach((m) => {
-            if (m.visible && m.object) {
-              m.object.rotation.y += 0.006 * propsRef.current.rotateSpeed;
+            if (
+              currentActiveCam.position.distanceTo(targetCameraPos.current) < 0.005 &&
+              controls.target.distanceTo(targetControlsTarget.current) < 0.005
+            ) {
+              currentActiveCam.position.copy(targetCameraPos.current);
+              controls.target.copy(targetControlsTarget.current);
+              targetCameraPos.current = null;
+              targetControlsTarget.current = null;
             }
-          });
-          requestRender();
-        }
-
-        const controlsChanged = controls.update();
-        if (controlsChanged) {
-          requestRender();
-        }
-
-        renderer.render(scene, currentActiveCam);
-      };
-      animate();
-
-      return () => {
-        cancelAnimationFrame(animId);
-        resizeObserver.disconnect();
-        canvas.removeEventListener('pointerdown', handlePointerDown);
-        canvas.removeEventListener('pointerup', handlePointerUp);
-
-        disposeOverrideMaterials();
-
-        // Explicit cleanup of scene objects, helpers, and renderer
-        if (threeRef.current) {
-          const { gridHelper, groundAxesHelper, axesHelper, bboxHelper, transformControls, renderer, scene } = threeRef.current;
-          
-          if (gridHelper) {
-            gridHelper.geometry?.dispose();
-            if (Array.isArray(gridHelper.material)) gridHelper.material.forEach((m) => m.dispose());
-            else gridHelper.material?.dispose();
           }
 
-          if (groundAxesHelper) {
-            groundAxesHelper.traverse((child: any) => {
-              if (child.geometry) child.geometry.dispose();
-              if (child.material) child.material.dispose();
+          // Update ViewportGizmo quaternion ref
+          if (cameraQuaternionRef) {
+            cameraQuaternionRef.current.copy(currentActiveCam.quaternion);
+          }
+
+          // Update animation mixer if playing
+          if (isPlayingAnim && mixer) {
+            mixer.update(delta);
+          }
+
+          // Auto rotate logic
+          if (isAutoRotating) {
+            propsRef.current.models.forEach((m) => {
+              if (m.visible && m.object) {
+                m.object.rotation.y += 0.006 * propsRef.current.rotateSpeed;
+              }
             });
           }
 
-          if (axesHelper) {
-            axesHelper.geometry?.dispose();
-            (axesHelper.material as any)?.dispose?.();
-          }
+          renderer.render(scene, currentActiveCam);
+        }
 
-          if (bboxHelper) {
-            bboxHelper.geometry?.dispose();
-            (bboxHelper.material as any)?.dispose?.();
-          }
+        // Determine if another frame needs to be scheduled
+        const continueNextFrame =
+          isAutoRotating ||
+          isPlayingAnim ||
+          isLerping ||
+          isInteracting ||
+          controlsDampingActive ||
+          needsRenderRef.current > 0;
 
+        if (continueNextFrame) {
+          animId = requestAnimationFrame(animate);
+        } else {
+          // Orbit controls and scene are idle -> Stop continuous rAF polling!
+          isLoopRunning = false;
+          animId = null;
+        }
+      };
+
+      const wakeLoop = () => {
+        if (!isLoopRunning) {
+          isLoopRunning = true;
+          animId = requestAnimationFrame(animate);
+        }
+      };
+      wakeLoopRef.current = wakeLoop;
+
+      // Start initial render
+      wakeLoop();
+
+      return () => {
+        if (animId !== null) {
+          cancelAnimationFrame(animId);
+          animId = null;
+        }
+        isLoopRunning = false;
+
+        resizeObserver.disconnect();
+        canvas.removeEventListener('pointerdown', handlePointerDown);
+        canvas.removeEventListener('pointerup', handlePointerUp);
+        canvas.removeEventListener('webglcontextlost', handleContextLost);
+        canvas.removeEventListener('webglcontextrestored', handleContextRestored);
+
+        disposeOverrideMaterials();
+
+        // Comprehensive deep scene and renderer cleanup
+        if (threeRef.current) {
+          const { transformControls, renderer, scene } = threeRef.current;
           transformControls.dispose();
+          disposeSceneHierarchy(scene, renderer);
           renderer.dispose();
-          scene.clear();
         }
       };
     }, [disposeOverrideMaterials, requestRender]);
@@ -622,14 +679,14 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
       const { scene, originalMaterials } = threeRef.current;
 
       // 1. Before mounting new or updated models, safely traverse and dispose of previous geometries,
-      // materials, and textures to prevent WebGL GPU memory leaks.
+      // materials, textures, and render targets to prevent WebGL GPU memory leaks.
       const currentModelMap = new Map(models.map((m) => [m.id, m.object]));
       prevModelsMapRef.current.forEach((prevObj, id) => {
         const currentObj = currentModelMap.get(id);
         // If a model was removed or replaced with a new Object3D reference
         if (!currentObj || currentObj !== prevObj) {
           scene.remove(prevObj);
-          dispose3DObject(prevObj);
+          disposeSceneHierarchy(prevObj, threeRef.current?.renderer);
         }
       });
       prevModelsMapRef.current = currentModelMap;
@@ -1097,8 +1154,28 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
     }));
 
     return (
-      <div ref={containerRef} className="w-full h-full relative overflow-hidden">
-        <canvas ref={canvasRef} className="w-full h-full block cursor-grab active:cursor-grabbing" />
+      <div ref={containerRef} className="w-full h-full relative overflow-hidden" role="region" aria-label="3D Viewport Scene">
+        <canvas
+          ref={canvasRef}
+          tabIndex={0}
+          role="img"
+          aria-label="Interactive 3D model viewport: use mouse, touch, or keyboard to rotate and inspect"
+          className="w-full h-full block cursor-grab active:cursor-grabbing focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset"
+        >
+          <div className="sr-only">
+            <h3>Interactive 3D Model Viewport</h3>
+            <p>
+              Interactive 3D model viewport: use mouse or keyboard to rotate, pan, zoom, and inspect models.
+            </p>
+            <ul>
+              <li>Rotate/Orbit View: Click and drag with left mouse button, or use arrow keys</li>
+              <li>Pan Camera: Right click and drag, or Shift + click and drag</li>
+              <li>Zoom / Dolly: Mouse wheel scroll or touch pinch gesture</li>
+              <li>Transform Controls: W for Move, E for Rotate, R for Scale, Q/Esc to Deselect</li>
+              <li>Camera Views: 1 for Front, 3 for Right, 7 for Top, 5 for Orthographic Toggle, 0 for Isometric View, F to Focus model</li>
+            </ul>
+          </div>
+        </canvas>
       </div>
     );
   }

@@ -92,9 +92,23 @@ class DecoderWorkerPool {
 
       this.pendingTasks.set(id, { resolve, reject, timeoutId });
 
-      // If buffer is provided, transfer it to avoid memory duplication
-      if (data.buffer) {
-        worker.postMessage(request, [data.buffer]);
+      // Build transfer list of all transferable ArrayBuffers
+      const transferList: Transferable[] = [];
+
+      if (data.buffer instanceof ArrayBuffer && data.buffer.byteLength > 0) {
+        transferList.push(data.buffer);
+      } else if (ArrayBuffer.isView(data.buffer) && (data.buffer as any).buffer instanceof ArrayBuffer) {
+        transferList.push((data.buffer as any).buffer);
+      } else if (!data.buffer && data.text) {
+        // Convert text payload into an ArrayBuffer so it can be transferred with zero-copy
+        const encoded = new TextEncoder().encode(data.text);
+        request.buffer = encoded.buffer;
+        request.text = undefined;
+        transferList.push(encoded.buffer);
+      }
+
+      if (transferList.length > 0) {
+        worker.postMessage(request, transferList);
       } else {
         worker.postMessage(request);
       }

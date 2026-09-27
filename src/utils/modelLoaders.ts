@@ -278,8 +278,8 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
       } else if (ext === 'obj') {
         if (globalDecoderWorkerPool.available) {
           try {
-            const text = await file.text();
-            const res = await globalDecoderWorkerPool.decode('obj', { text });
+            const arrayBuffer = await file.arrayBuffer();
+            const res = await globalDecoderWorkerPool.decode('obj', { buffer: arrayBuffer });
             if (res.meshes && res.meshes.length > 0) {
               const group = new THREE.Group();
               for (const m of res.meshes) {
@@ -449,35 +449,76 @@ export function createDemoModel(existingModels: LoadedModel[]): LoadedModel {
 }
 
 /**
- * Traverses an Object3D hierarchy and deeply disposes all geometries, textures,
- * materials, and skeleton buffers to prevent VRAM memory leaks.
+ * Comprehensive cleanup function that recursively traverses a Three.js scene or Object3D hierarchy,
+ * deeply disposing of all BufferGeometry instances, materials, textures, WebGL render targets,
+ * shadow maps, skeletons, and animation buffers to strictly prevent WebGL memory leaks.
  */
-export function dispose3DObject(object: THREE.Object3D): void {
-  if (!object) return;
+export function disposeSceneHierarchy(
+  root: THREE.Object3D | THREE.Scene,
+  renderer?: THREE.WebGLRenderer
+): void {
+  if (!root) return;
 
   const disposedTextures = new Set<string>();
   const disposedMaterials = new Set<string>();
   const disposedGeometries = new Set<string>();
+  const disposedRenderTargets = new Set<string>();
 
   const disposeTexture = (tex: any) => {
-    if (tex && typeof tex.dispose === 'function' && !disposedTextures.has(tex.uuid)) {
-      disposedTextures.add(tex.uuid);
-      tex.dispose();
+    if (!tex || typeof tex !== 'object' || disposedTextures.has(tex.uuid)) return;
+    disposedTextures.add(tex.uuid);
+
+    try {
+      if (typeof tex.dispose === 'function') {
+        tex.dispose();
+      }
+      if (tex.image) {
+        if (typeof (tex.image as ImageBitmap).close === 'function') {
+          (tex.image as ImageBitmap).close();
+        }
+        tex.image = null;
+      }
+      if (tex.source) {
+        if (tex.source.data && typeof (tex.source.data as ImageBitmap).close === 'function') {
+          (tex.source.data as ImageBitmap).close();
+        }
+        tex.source.data = null;
+      }
+    } catch (e) {
+      console.warn('Error disposing texture:', e);
+    }
+  };
+
+  const disposeRenderTarget = (target: any) => {
+    if (!target || typeof target !== 'object' || disposedRenderTargets.has(target.uuid)) return;
+    disposedRenderTargets.add(target.uuid);
+
+    try {
+      if (target.texture) disposeTexture(target.texture);
+      if (target.depthTexture) disposeTexture(target.depthTexture);
+      if (typeof target.dispose === 'function') {
+        target.dispose();
+      }
+    } catch (e) {
+      console.warn('Error disposing render target:', e);
     }
   };
 
   const disposeMaterial = (mat: THREE.Material) => {
-    if (!mat || disposedMaterials.has(mat.uuid)) return;
+    if (!mat || typeof mat !== 'object' || disposedMaterials.has(mat.uuid)) return;
     disposedMaterials.add(mat.uuid);
 
     const matAny = mat as any;
-    // Dispose standard textures
+
     const textureProps = [
       'map',
       'lightMap',
+      'aoMap',
       'bumpMap',
       'normalMap',
       'specularMap',
+      'specularColorMap',
+      'specularIntensityMap',
       'envMap',
       'alphaMap',
       'roughnessMap',
@@ -498,49 +539,117 @@ export function dispose3DObject(object: THREE.Object3D): void {
     ];
 
     for (const prop of textureProps) {
-      disposeTexture(matAny[prop]);
+      if (matAny[prop]) {
+        disposeTexture(matAny[prop]);
+        matAny[prop] = null;
+      }
     }
 
-    // Check custom shader uniforms if any
-    if (matAny.uniforms) {
+    if (matAny.uniforms && typeof matAny.uniforms === 'object') {
       for (const key of Object.keys(matAny.uniforms)) {
-        const val = matAny.uniforms[key]?.value;
-        if (val && (val.isTexture || val.isWebGLRenderTarget)) {
-          disposeTexture(val);
+        const uniformVal = matAny.uniforms[key]?.value;
+        if (uniformVal) {
+          if (uniformVal.isTexture || uniformVal instanceof THREE.Texture) {
+            disposeTexture(uniformVal);
+          } else if (uniformVal.isWebGLRenderTarget || uniformVal instanceof THREE.WebGLRenderTarget) {
+            disposeRenderTarget(uniformVal);
+          } else if (Array.isArray(uniformVal)) {
+            uniformVal.forEach((item) => {
+              if (item?.isTexture || item instanceof THREE.Texture) disposeTexture(item);
+              else if (item?.isWebGLRenderTarget || item instanceof THREE.WebGLRenderTarget) disposeRenderTarget(item);
+            });
+          }
         }
       }
     }
 
-    mat.dispose();
+    try {
+      mat.dispose();
+    } catch (e) {
+      console.warn('Error disposing material:', e);
+    }
   };
 
-  object.traverse((child) => {
-    if (child instanceof THREE.Mesh || child instanceof THREE.Points || child instanceof THREE.Line) {
-      // 1. Dispose Geometry
-      if (child.geometry && !disposedGeometries.has(child.geometry.uuid)) {
-        disposedGeometries.add(child.geometry.uuid);
-        child.geometry.dispose();
-      }
+  const disposeGeometry = (geom: THREE.BufferGeometry) => {
+    if (!geom || typeof geom !== 'object' || disposedGeometries.has(geom.uuid)) return;
+    disposedGeometries.add(geom.uuid);
 
-      // 2. Dispose Materials & Textures
-      if (child.material) {
-        if (Array.isArray(child.material)) {
-          child.material.forEach((mat) => disposeMaterial(mat));
-        } else {
-          disposeMaterial(child.material);
+    try {
+      if (geom.attributes) {
+        for (const attrName of Object.keys(geom.attributes)) {
+          const attr = geom.attributes[attrName];
+          if (attr && typeof (attr as any).dispose === 'function') {
+            (attr as any).dispose();
+          }
         }
       }
-
-      // 3. Dispose Skeleton / SkinnedMesh bones if present
-      if ((child as any).skeleton && typeof (child as any).skeleton.dispose === 'function') {
-        (child as any).skeleton.dispose();
+      if (geom.index && typeof (geom.index as any).dispose === 'function') {
+        (geom.index as any).dispose();
       }
+      geom.dispose();
+    } catch (e) {
+      console.warn('Error disposing geometry:', e);
+    }
+  };
+
+  root.traverse((child: any) => {
+    // 1. BufferGeometry
+    if (child.geometry && child.geometry instanceof THREE.BufferGeometry) {
+      disposeGeometry(child.geometry);
+    }
+
+    // 2. Materials
+    if (child.material) {
+      if (Array.isArray(child.material)) {
+        child.material.forEach((m: THREE.Material) => disposeMaterial(m));
+      } else {
+        disposeMaterial(child.material);
+      }
+    }
+
+    // 3. Skeletons and bone textures
+    if (child.skeleton) {
+      if (child.skeleton.boneTexture) {
+        disposeTexture(child.skeleton.boneTexture);
+      }
+      if (typeof child.skeleton.dispose === 'function') {
+        child.skeleton.dispose();
+      }
+    }
+
+    // 4. Lights with shadow map render targets
+    if (child.isLight && child.shadow) {
+      if (child.shadow.map) {
+        disposeRenderTarget(child.shadow.map);
+        child.shadow.map = null;
+      }
+    }
+
+    // 5. Render targets on cameras / custom objects
+    if (child.renderTarget) {
+      disposeRenderTarget(child.renderTarget);
     }
   });
 
-  if (object.parent) {
-    object.parent.remove(object);
+  if (renderer) {
+    try {
+      renderer.renderLists?.dispose?.();
+    } catch {
+      // ignore
+    }
   }
+
+  if (root.parent) {
+    root.parent.remove(root);
+  }
+}
+
+/**
+ * Traverses an Object3D hierarchy and deeply disposes all geometries, textures,
+ * materials, render targets, and skeleton buffers to prevent VRAM memory leaks.
+ */
+export function dispose3DObject(object: THREE.Object3D, renderer?: THREE.WebGLRenderer): void {
+  disposeSceneHierarchy(object, renderer);
 }
 
 /**

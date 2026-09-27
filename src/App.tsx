@@ -17,7 +17,8 @@ import { Viewport3D, ViewportHandle } from './components/Viewport3D';
 import { DropzoneOverlay } from './components/DropzoneOverlay';
 import { ToastContainer } from './components/Toast';
 import { ShortcutsModal } from './components/ShortcutsModal';
-import { loadModelFile, createDemoModel, dispose3DObject, createSampleScriptFile } from './utils/modelLoaders';
+import { GoogleDriveModal } from './components/GoogleDriveModal';
+import { loadModelFile, createDemoModel, dispose3DObject, disposeSceneHierarchy, createSampleScriptFile } from './utils/modelLoaders';
 
 export default function App() {
   const viewportRef = useRef<ViewportHandle>(null);
@@ -67,6 +68,7 @@ export default function App() {
   // UI State
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
+  const [isGoogleDriveOpen, setIsGoogleDriveOpen] = useState<boolean>(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   // Toast Helper
@@ -130,11 +132,11 @@ export default function App() {
           const loaded = await loadModelFile(file, currentModels);
           
           // Before mounting the new model, safely traverse and dispose of previous geometries,
-          // materials, and textures if replacing a model with the same name.
+          // materials, textures, and render targets if replacing a model with the same name.
           const existingIndex = currentModels.findIndex((m) => m.name === file.name);
           if (existingIndex !== -1) {
             const existingModel = currentModels[existingIndex];
-            dispose3DObject(existingModel.object);
+            disposeSceneHierarchy(existingModel.object);
             currentModels = currentModels.filter((m) => m.id !== existingModel.id);
             setModels((prev) => prev.filter((m) => m.id !== existingModel.id));
           }
@@ -197,7 +199,7 @@ export default function App() {
   const handleDeleteModel = (id: string) => {
     const toDelete = models.find((m) => m.id === id);
     if (toDelete) {
-      dispose3DObject(toDelete.object);
+      disposeSceneHierarchy(toDelete.object);
     }
     setModels((prev) => prev.filter((m) => m.id !== id));
     if (selectedModelId === id) {
@@ -214,7 +216,7 @@ export default function App() {
 
   // Clear all models
   const handleClearAllModels = () => {
-    models.forEach((m) => dispose3DObject(m.object));
+    models.forEach((m) => disposeSceneHierarchy(m.object));
     setModels([]);
     setSelectedModelId(null);
     setIsAnimPlaying(false);
@@ -408,6 +410,7 @@ export default function App() {
           onSelectModel={handleSelectModel}
           onTransformChange={handleTransformGizmoChange}
           onFpsUpdate={setFps}
+          onToast={addToast}
           cameraQuaternionRef={cameraQuaternionRef}
         />
       </div>
@@ -457,6 +460,7 @@ export default function App() {
         onTogglePlayAnim={() => setIsAnimPlaying((p) => !p)}
         onStopAnim={() => setIsAnimPlaying(false)}
         onSetAnimSpeed={setAnimSpeed}
+        onOpenGoogleDrive={() => setIsGoogleDriveOpen(true)}
       />
 
       {/* 3. Floating Transform HUD (Top-Center) */}
@@ -504,6 +508,7 @@ export default function App() {
         }}
         onLoadDemo={handleGenerateDemo}
         onLoadSampleScript={handleLoadSampleScript}
+        onOpenGoogleDrive={() => setIsGoogleDriveOpen(true)}
       />
 
       {/* 6. Non-blocking Toast Alerts */}
@@ -513,6 +518,14 @@ export default function App() {
       <ShortcutsModal
         isOpen={isShortcutsOpen}
         onClose={() => setIsShortcutsOpen(false)}
+      />
+
+      {/* 8. Google Drive Importer Modal */}
+      <GoogleDriveModal
+        isOpen={isGoogleDriveOpen}
+        onClose={() => setIsGoogleDriveOpen(false)}
+        onLoadModelFile={(file) => handleFilesSelected([file])}
+        loadedModelNames={models.map((m) => m.name)}
       />
     </div>
   );
