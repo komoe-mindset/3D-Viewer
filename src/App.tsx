@@ -18,11 +18,21 @@ import { DropzoneOverlay } from './components/DropzoneOverlay';
 import { ToastContainer } from './components/Toast';
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { GoogleDriveModal } from './components/GoogleDriveModal';
-import { loadModelFile, createDemoModel, dispose3DObject, disposeSceneHierarchy, createSampleScriptFile } from './utils/modelLoaders';
+import {
+  loadModelFile,
+  createDemoModel,
+  disposeLoadedModel,
+  disposeLoadedModels,
+  switchModelCleanup,
+  dispose3DObject,
+  disposeSceneHierarchy,
+  createSampleScriptFile,
+} from './utils/modelLoaders';
 
 export default function App() {
   const viewportRef = useRef<ViewportHandle>(null);
   const cameraQuaternionRef = useRef<THREE.Quaternion>(new THREE.Quaternion());
+  const currentLoadingAbortControllerRef = useRef<AbortController | null>(null);
 
   // Models State
   const [models, setModels] = useState<LoadedModel[]>([]);
@@ -116,10 +126,17 @@ export default function App() {
     [models, syncTransformStateWithModel, gizmoMode]
   );
 
-  // Batch Load Files with concurrent queue processing
+  // Batch Load Files with concurrent queue processing and AbortSignal support
   const handleFilesSelected = async (files: FileList | File[]) => {
     const fileList = Array.from(files);
     if (fileList.length === 0) return;
+
+    // Abort any ongoing file loading/downloads if a new model batch is started
+    if (currentLoadingAbortControllerRef.current) {
+      currentLoadingAbortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    currentLoadingAbortControllerRef.current = abortController;
 
     addToast(`Queuing ${fileList.length} file(s) for loading...`, 'info');
 
@@ -129,14 +146,16 @@ export default function App() {
     await Promise.all(
       fileList.map(async (file) => {
         try {
-          const loaded = await loadModelFile(file, currentModels);
+          const loaded = await loadModelFile(file, currentModels, {
+            signal: abortController.signal,
+          });
           
           // Before mounting the new model, safely traverse and dispose of previous geometries,
           // materials, textures, and render targets if replacing a model with the same name.
           const existingIndex = currentModels.findIndex((m) => m.name === file.name);
           if (existingIndex !== -1) {
             const existingModel = currentModels[existingIndex];
-            disposeSceneHierarchy(existingModel.object);
+            disposeLoadedModel(existingModel);
             currentModels = currentModels.filter((m) => m.id !== existingModel.id);
             setModels((prev) => prev.filter((m) => m.id !== existingModel.id));
           }
@@ -145,11 +164,19 @@ export default function App() {
           currentModels.push(loaded);
           addToast(`Loaded ${file.name}`, 'success');
         } catch (err: any) {
+          if (err?.name === 'AbortError' || abortController.signal.aborted) {
+            console.info(`Loading of ${file.name} cancelled.`);
+            return;
+          }
           console.error(err);
           addToast(err.message || `Failed to process ${file.name}`, 'error');
         }
       })
     );
+
+    if (abortController.signal.aborted) {
+      return;
+    }
 
     if (loadedList.length > 0) {
       setModels((prev) => {
@@ -176,6 +203,9 @@ export default function App() {
 
   // Generate Procedural Demo Model
   const handleGenerateDemo = () => {
+    if (currentLoadingAbortControllerRef.current) {
+      currentLoadingAbortControllerRef.current.abort();
+    }
     const demo = createDemoModel(models);
     setModels((prev) => [...prev, demo]);
     setSelectedModelId(demo.id);
@@ -199,7 +229,7 @@ export default function App() {
   const handleDeleteModel = (id: string) => {
     const toDelete = models.find((m) => m.id === id);
     if (toDelete) {
-      disposeSceneHierarchy(toDelete.object);
+      disposeLoadedModel(toDelete);
     }
     setModels((prev) => prev.filter((m) => m.id !== id));
     if (selectedModelId === id) {
@@ -216,7 +246,10 @@ export default function App() {
 
   // Clear all models
   const handleClearAllModels = () => {
-    models.forEach((m) => disposeSceneHierarchy(m.object));
+    if (currentLoadingAbortControllerRef.current) {
+      currentLoadingAbortControllerRef.current.abort();
+    }
+    disposeLoadedModels(models);
     setModels([]);
     setSelectedModelId(null);
     setIsAnimPlaying(false);
@@ -526,6 +559,7 @@ export default function App() {
         onClose={() => setIsGoogleDriveOpen(false)}
         onLoadModelFile={(file) => handleFilesSelected([file])}
         loadedModelNames={models.map((m) => m.name)}
+        onAddToast={addToast}
       />
     </div>
   );

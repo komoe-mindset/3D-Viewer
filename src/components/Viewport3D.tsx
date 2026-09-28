@@ -686,6 +686,18 @@ export const Viewport3D = React.forwardRef<ViewportHandle, Viewport3DProps>(
         // If a model was removed or replaced with a new Object3D reference
         if (!currentObj || currentObj !== prevObj) {
           scene.remove(prevObj);
+          // Prune cached original materials so disposed materials are not retained in RAM
+          prevObj.traverse((child: any) => {
+            if (child.uuid && originalMaterials.has(child.uuid)) {
+              originalMaterials.delete(child.uuid);
+            }
+          });
+          // Uncache animation mixer if attached to this object
+          if (threeRef.current?.mixer && (threeRef.current.mixer.getRoot() as any) === prevObj) {
+            threeRef.current.mixer.stopAllAction();
+            threeRef.current.mixer = null;
+            threeRef.current.currentAction = null;
+          }
           disposeSceneHierarchy(prevObj, threeRef.current?.renderer);
         }
       });

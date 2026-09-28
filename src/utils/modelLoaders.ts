@@ -1,23 +1,115 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
-import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import type { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import type { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import type { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
+import type { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import type { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import type { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { decodeSPZ } from './spzDecoder';
 import { globalDecoderWorkerPool } from './decoderWorkerPool';
 import { LoadedModel, ModelStats } from '../types';
 
 /**
+ * Lazy-loaded Three.js Loader singletons (code-split dynamic chunks).
+ * These loaders (~500KB+ minified) are only fetched over the network on demand
+ * when a model of that specific format is loaded, drastically improving
+ * Google Lighthouse Performance, FCP, LCP, and Total Blocking Time.
+ */
+let gltfLoaderInstance: GLTFLoader | null = null;
+let gltfLoaderPromise: Promise<GLTFLoader> | null = null;
+
+export async function getGLTFLoader(): Promise<GLTFLoader> {
+  if (gltfLoaderInstance) return gltfLoaderInstance;
+  if (!gltfLoaderPromise) {
+    gltfLoaderPromise = (async () => {
+      const [{ GLTFLoader }, { DRACOLoader }] = await Promise.all([
+        import('three/examples/jsm/loaders/GLTFLoader.js'),
+        import('three/examples/jsm/loaders/DRACOLoader.js'),
+      ]);
+      const dracoLoader = new DRACOLoader();
+      dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+      const loader = new GLTFLoader();
+      loader.setDRACOLoader(dracoLoader);
+      gltfLoaderInstance = loader;
+      return loader;
+    })();
+  }
+  return gltfLoaderPromise;
+}
+
+let fbxLoaderInstance: FBXLoader | null = null;
+let fbxLoaderPromise: Promise<FBXLoader> | null = null;
+
+export async function getFBXLoader(): Promise<FBXLoader> {
+  if (fbxLoaderInstance) return fbxLoaderInstance;
+  if (!fbxLoaderPromise) {
+    fbxLoaderPromise = import('three/examples/jsm/loaders/FBXLoader.js').then(({ FBXLoader }) => {
+      fbxLoaderInstance = new FBXLoader();
+      return fbxLoaderInstance;
+    });
+  }
+  return fbxLoaderPromise;
+}
+
+let plyLoaderInstance: PLYLoader | null = null;
+let plyLoaderPromise: Promise<PLYLoader> | null = null;
+
+export async function getPLYLoader(): Promise<PLYLoader> {
+  if (plyLoaderInstance) return plyLoaderInstance;
+  if (!plyLoaderPromise) {
+    plyLoaderPromise = import('three/examples/jsm/loaders/PLYLoader.js').then(({ PLYLoader }) => {
+      plyLoaderInstance = new PLYLoader();
+      return plyLoaderInstance;
+    });
+  }
+  return plyLoaderPromise;
+}
+
+let objLoaderInstance: OBJLoader | null = null;
+let objLoaderPromise: Promise<OBJLoader> | null = null;
+
+export async function getOBJLoader(): Promise<OBJLoader> {
+  if (objLoaderInstance) return objLoaderInstance;
+  if (!objLoaderPromise) {
+    objLoaderPromise = import('three/examples/jsm/loaders/OBJLoader.js').then(({ OBJLoader }) => {
+      objLoaderInstance = new OBJLoader();
+      return objLoaderInstance;
+    });
+  }
+  return objLoaderPromise;
+}
+
+let stlLoaderInstance: STLLoader | null = null;
+let stlLoaderPromise: Promise<STLLoader> | null = null;
+
+export async function getSTLLoader(): Promise<STLLoader> {
+  if (stlLoaderInstance) return stlLoaderInstance;
+  if (!stlLoaderPromise) {
+    stlLoaderPromise = import('three/examples/jsm/loaders/STLLoader.js').then(({ STLLoader }) => {
+      stlLoaderInstance = new STLLoader();
+      return stlLoaderInstance;
+    });
+  }
+  return stlLoaderPromise;
+}
+
+/**
  * Concurrency-controlled queue for asynchronous 3D model parsing and loading.
  * Limits concurrent model decoding and geometry parsing to a max of 2-3 at a time
  * to prevent main-thread freezing and VRAM spike bottlenecks.
+ * Supports AbortSignal for instantaneous task cancellation while queued or running.
  */
+interface QueueItem<T> {
+  task: () => Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: any) => void;
+  signal?: AbortSignal;
+}
+
 export class ModelLoadingQueue {
   private maxConcurrent: number;
   private running = 0;
-  private queue: Array<() => Promise<void>> = [];
+  private queue: Array<QueueItem<any>> = [];
 
   constructor(maxConcurrent = 2) {
     this.maxConcurrent = maxConcurrent;
@@ -25,35 +117,60 @@ export class ModelLoadingQueue {
 
   /**
    * Enqueue a model loading task. Executes immediately if below concurrency limit,
-   * otherwise waits for previous tasks to settle.
+   * otherwise waits for previous tasks to settle. Supports cancellation via AbortSignal.
    */
-  enqueue<T>(task: () => Promise<T>): Promise<T> {
+  enqueue<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const execute = async () => {
-        this.running++;
-        try {
-          const result = await task();
-          resolve(result);
-        } catch (err) {
-          reject(err);
-        } finally {
-          this.running--;
-          this.next();
-        }
+      if (signal?.aborted) {
+        return reject(new DOMException('Operation aborted before execution', 'AbortError'));
+      }
+
+      const item: QueueItem<T> = {
+        task,
+        resolve,
+        reject,
+        signal,
       };
 
-      if (this.running < this.maxConcurrent) {
-        execute();
-      } else {
-        this.queue.push(execute);
+      if (signal) {
+        const onAbort = () => {
+          const idx = this.queue.indexOf(item);
+          if (idx !== -1) {
+            this.queue.splice(idx, 1);
+          }
+          reject(new DOMException('Task was aborted while queued', 'AbortError'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
       }
+
+      this.queue.push(item);
+      this.processNext();
     });
   }
 
-  private next() {
-    if (this.queue.length > 0 && this.running < this.maxConcurrent) {
-      const task = this.queue.shift();
-      if (task) task();
+  private async processNext() {
+    if (this.running >= this.maxConcurrent || this.queue.length === 0) {
+      return;
+    }
+
+    const nextItem = this.queue.shift();
+    if (!nextItem) return;
+
+    if (nextItem.signal?.aborted) {
+      nextItem.reject(new DOMException('Operation aborted before execution', 'AbortError'));
+      this.processNext();
+      return;
+    }
+
+    this.running++;
+    try {
+      const result = await nextItem.task();
+      nextItem.resolve(result);
+    } catch (err) {
+      nextItem.reject(err);
+    } finally {
+      this.running--;
+      this.processNext();
     }
   }
 
@@ -69,17 +186,102 @@ export class ModelLoadingQueue {
 // Global model loader queue singleton with max concurrency of 2
 export const globalModelLoadingQueue = new ModelLoadingQueue(2);
 
-// Setup DRACO Loader singleton
-const dracoLoader = new DRACOLoader();
-dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+/**
+ * Global active model loading AbortController manager.
+ * Cancels running downloads/decodes whenever a user closes a modal,
+ * selects a new model, or requests a fresh batch of models.
+ */
+let activeModelLoadAbortController: AbortController | null = null;
 
-const gltfLoader = new GLTFLoader();
-gltfLoader.setDRACOLoader(dracoLoader);
+export function createModelLoadAbortController(): AbortController {
+  if (activeModelLoadAbortController) {
+    activeModelLoadAbortController.abort();
+  }
+  activeModelLoadAbortController = new AbortController();
+  return activeModelLoadAbortController;
+}
 
-const fbxLoader = new FBXLoader();
-const plyLoader = new PLYLoader();
-const objLoader = new OBJLoader();
-const stlLoader = new STLLoader();
+export function cancelActiveModelLoads(): void {
+  if (activeModelLoadAbortController) {
+    activeModelLoadAbortController.abort();
+    activeModelLoadAbortController = null;
+  }
+}
+
+export function getActiveLoadingSignal(): AbortSignal | null {
+  return activeModelLoadAbortController ? activeModelLoadAbortController.signal : null;
+}
+
+/**
+ * Downloads a model file from a remote URL or Google Drive link using fetch
+ * with stream progress support and full AbortSignal cancellation.
+ */
+export async function downloadModelFile(
+  url: string,
+  filename: string,
+  options?: {
+    signal?: AbortSignal;
+    headers?: Record<string, string>;
+    mimeType?: string;
+    onProgress?: (loadedBytes: number, totalBytes: number) => void;
+  }
+): Promise<File> {
+  const signal = options?.signal;
+  if (signal?.aborted) {
+    throw new DOMException('Download aborted before start', 'AbortError');
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: options?.headers,
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Download failed with HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  const contentLength = response.headers.get('content-length');
+  const total = contentLength ? parseInt(contentLength, 10) : 0;
+  const mime = options?.mimeType || response.headers.get('content-type') || 'application/octet-stream';
+
+  if (!response.body) {
+    const blob = await response.blob();
+    return new File([blob], filename, { type: mime, lastModified: Date.now() });
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        reader.cancel().catch(() => {});
+        throw new DOMException('Download cancelled by user', 'AbortError');
+      }
+
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      if (value) {
+        chunks.push(value);
+        received += value.length;
+        if (options?.onProgress) {
+          options.onProgress(received, total || received);
+        }
+      }
+    }
+  } catch (err: any) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw new DOMException('Download cancelled by user', 'AbortError');
+    }
+    throw err;
+  }
+
+  const blob = new Blob(chunks, { type: mime });
+  return new File([blob], filename, { type: mime, lastModified: Date.now() });
+}
 
 /**
  * Prepares and optimizes meshes in an Object3D hierarchy:
@@ -189,12 +391,31 @@ export function normalizeModelPosition(object: THREE.Object3D, existingModels: L
   }
 }
 
+export interface LoadModelOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: number) => void;
+}
+
 /**
  * Loads a 3D model file and returns a LoadedModel object.
  * Processes via the globalModelLoadingQueue to limit concurrent decodes to 2 max.
+ * Supports dynamic lazy loading for Three.js loaders and AbortSignal cancellation.
  */
-export async function loadModelFile(file: File, existingModels: LoadedModel[]): Promise<LoadedModel> {
+export async function loadModelFile(
+  file: File,
+  existingModels: LoadedModel[],
+  options?: LoadModelOptions
+): Promise<LoadedModel> {
+  const signal = options?.signal;
+  if (signal?.aborted) {
+    throw new DOMException('Operation aborted before start', 'AbortError');
+  }
+
   return globalModelLoadingQueue.enqueue(async () => {
+    if (signal?.aborted) {
+      throw new DOMException('Operation aborted', 'AbortError');
+    }
+
     const filename = file.name;
     const ext = filename.split('.').pop()?.toLowerCase() || '';
     const url = URL.createObjectURL(file);
@@ -204,18 +425,26 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
 
     try {
       if (ext === 'glb' || ext === 'gltf') {
-        const gltf = await gltfLoader.loadAsync(url);
+        const loader = await getGLTFLoader();
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
+        const gltf = await loader.loadAsync(url);
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
         object = gltf.scene;
         animations = gltf.animations || [];
       } else if (ext === 'fbx') {
-        const fbx = await fbxLoader.loadAsync(url);
+        const loader = await getFBXLoader();
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
+        const fbx = await loader.loadAsync(url);
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
         object = fbx;
         animations = fbx.animations || [];
       } else if (ext === 'ply') {
         if (globalDecoderWorkerPool.available) {
           try {
             const arrayBuffer = await file.arrayBuffer();
+            if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
             const res = await globalDecoderWorkerPool.decode('ply', { buffer: arrayBuffer });
+            if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
             if (res.positions) {
               const geom = new THREE.BufferGeometry();
               geom.setAttribute('position', new THREE.BufferAttribute(res.positions, 3));
@@ -249,7 +478,11 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
         }
 
         if (!object) {
-          const geom = await plyLoader.loadAsync(url);
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
+          const loader = await getPLYLoader();
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
+          const geom = await loader.loadAsync(url);
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
           geom.computeVertexNormals();
           if (geom.index || (geom.attributes.normal && geom.attributes.position.count > 500)) {
             const mat = new THREE.MeshStandardMaterial({
@@ -269,7 +502,9 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
           }
         }
       } else if (ext === 'spz') {
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
         const geom = await decodeSPZ(file);
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
         const mat = new THREE.PointsMaterial({
           size: 0.04,
           vertexColors: true,
@@ -279,7 +514,9 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
         if (globalDecoderWorkerPool.available) {
           try {
             const arrayBuffer = await file.arrayBuffer();
+            if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
             const res = await globalDecoderWorkerPool.decode('obj', { buffer: arrayBuffer });
+            if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
             if (res.meshes && res.meshes.length > 0) {
               const group = new THREE.Group();
               for (const m of res.meshes) {
@@ -311,13 +548,19 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
         }
 
         if (!object) {
-          object = await objLoader.loadAsync(url);
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
+          const loader = await getOBJLoader();
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
+          object = await loader.loadAsync(url);
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
         }
       } else if (ext === 'stl') {
         if (globalDecoderWorkerPool.available) {
           try {
             const arrayBuffer = await file.arrayBuffer();
+            if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
             const res = await globalDecoderWorkerPool.decode('stl', { buffer: arrayBuffer });
+            if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
             if (res.positions) {
               const geom = new THREE.BufferGeometry();
               geom.setAttribute('position', new THREE.BufferAttribute(res.positions, 3));
@@ -339,7 +582,11 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
         }
 
         if (!object) {
-          const geom = await stlLoader.loadAsync(url);
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
+          const loader = await getSTLLoader();
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
+          const geom = await loader.loadAsync(url);
+          if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
           geom.computeVertexNormals();
           const mat = new THREE.MeshStandardMaterial({
             color: 0x94a3b8,
@@ -349,13 +596,18 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
           object = new THREE.Mesh(geom, mat);
         }
       } else if (ext === 'ts' || ext === 'js') {
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
         const code = await file.text();
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
         object = await executeThreeScript(code, filename);
+        if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
       } else {
         throw new Error(
           `Unsupported file format: .${ext}. Supported formats are .glb, .gltf, .fbx, .ply, .spz, .obj, .stl, .ts, .js`
         );
       }
+
+      if (signal?.aborted) throw new DOMException('Operation aborted', 'AbortError');
 
       if (!object) {
         throw new Error(`Failed to parse 3D model geometry for ${filename}`);
@@ -378,7 +630,7 @@ export async function loadModelFile(file: File, existingModels: LoadedModel[]): 
     } finally {
       URL.revokeObjectURL(url);
     }
-  });
+  }, signal);
 }
 
 /**
@@ -583,6 +835,18 @@ export function disposeSceneHierarchy(
           }
         }
       }
+      if (geom.morphAttributes) {
+        for (const key of Object.keys(geom.morphAttributes)) {
+          const morphArr = geom.morphAttributes[key];
+          if (Array.isArray(morphArr)) {
+            morphArr.forEach((attr: any) => {
+              if (attr && typeof attr.dispose === 'function') {
+                attr.dispose();
+              }
+            });
+          }
+        }
+      }
       if (geom.index && typeof (geom.index as any).dispose === 'function') {
         (geom.index as any).dispose();
       }
@@ -650,6 +914,52 @@ export function disposeSceneHierarchy(
  */
 export function dispose3DObject(object: THREE.Object3D, renderer?: THREE.WebGLRenderer): void {
   disposeSceneHierarchy(object, renderer);
+}
+
+/**
+ * Disposes all GPU resources for a LoadedModel instance:
+ * geometries, materials, textures, skeleton, and detaches animations.
+ */
+export function disposeLoadedModel(model: LoadedModel, renderer?: THREE.WebGLRenderer): void {
+  if (!model) return;
+  if (model.object) {
+    disposeSceneHierarchy(model.object, renderer);
+  }
+  model.animations = [];
+}
+
+/**
+ * Disposes all GPU resources for an array of LoadedModel instances.
+ */
+export function disposeLoadedModels(models: LoadedModel[], renderer?: THREE.WebGLRenderer): void {
+  models.forEach((m) => disposeLoadedModel(m, renderer));
+}
+
+/**
+ * Clean memory transition when switching active models or replacing existing models.
+ * Traverses and disposes of all geometries, materials, and textures for outgoing models
+ * to prevent GPU context loss and VRAM fragmentation.
+ */
+export function switchModelCleanup(
+  outgoing: LoadedModel | LoadedModel[] | THREE.Object3D | THREE.Object3D[],
+  renderer?: THREE.WebGLRenderer
+): void {
+  const items = Array.isArray(outgoing) ? outgoing : [outgoing];
+  items.forEach((item) => {
+    if (!item) return;
+    if (item instanceof THREE.Object3D) {
+      disposeSceneHierarchy(item, renderer);
+    } else if ('object' in item && item.object instanceof THREE.Object3D) {
+      disposeLoadedModel(item as LoadedModel, renderer);
+    }
+  });
+  if (renderer) {
+    try {
+      renderer.renderLists?.dispose?.();
+    } catch {
+      // ignore
+    }
+  }
 }
 
 /**
