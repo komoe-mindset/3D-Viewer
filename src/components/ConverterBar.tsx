@@ -33,7 +33,7 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
   onOpenConverterModal,
   onAddToast,
 }) => {
-  const [targetFormat, setTargetFormat] = useState<TargetFormat>('ply');
+  const [targetFormat, setTargetFormat] = useState<TargetFormat | 'fbx'>('glb');
   const [inputFormatOverride, setInputFormatOverride] = useState<InputFormat | 'auto'>('auto');
   const [isConverting, setIsConverting] = useState<boolean>(false);
   const [isMinimized, setIsMinimized] = useState<boolean>(false);
@@ -63,8 +63,17 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
     return null;
   }
 
+  const isFbxSelected = targetFormat === 'fbx';
+
   const handleConvert = async () => {
     if (!activeModel) return;
+
+    if (targetFormat === 'fbx') {
+      const notice = 'FBX export requires server-side rendering, please use GLB or OBJ.';
+      setConversionError(notice);
+      if (onAddToast) onAddToast(notice, 'info');
+      return;
+    }
 
     setIsConverting(true);
     setLastConvertedInfo(null);
@@ -188,13 +197,24 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
                 <select
                   id="quick-target-format"
                   value={targetFormat}
-                  onChange={(e) => setTargetFormat(e.target.value as TargetFormat)}
+                  onChange={(e) => {
+                    const val = e.target.value as TargetFormat | 'fbx';
+                    setTargetFormat(val);
+                    if (val === 'fbx') {
+                      setConversionError('FBX export requires server-side rendering, please use GLB or OBJ.');
+                    } else {
+                      setConversionError(null);
+                    }
+                  }}
                   aria-label="Target format to export"
                   className="bg-transparent text-amber-300 font-bold text-xs outline-none cursor-pointer pr-4 appearance-none"
                 >
+                  <option value="glb" className="bg-[#242424] text-white">GLB (.glb) ★</option>
+                  <option value="usdz" className="bg-[#242424] text-white">USDZ (.usdz) - Apple AR</option>
                   <option value="ply" className="bg-[#242424] text-white">PLY (.ply)</option>
                   <option value="obj" className="bg-[#242424] text-white">OBJ (.obj)</option>
                   <option value="stl" className="bg-[#242424] text-white">STL (.stl)</option>
+                  <option value="fbx" className="bg-[#242424] text-slate-400">FBX (.fbx) - Server only</option>
                 </select>
                 <ChevronDown className="w-3 h-3 text-slate-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true" />
               </div>
@@ -205,9 +225,13 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
               type="button"
               role="button"
               onClick={handleConvert}
-              disabled={isConverting}
+              disabled={isConverting || isFbxSelected}
               aria-busy={isConverting}
-              aria-label={`Convert and download ${activeModel.name} as ${targetFormat.toUpperCase()}`}
+              aria-label={
+                isFbxSelected
+                  ? 'FBX export requires server-side rendering, please use GLB or OBJ.'
+                  : `Convert and download ${activeModel.name} as ${targetFormat.toUpperCase()}`
+              }
               className="ml-auto px-3.5 py-1.5 rounded-xl font-bold text-white bg-[#ea7600] hover:bg-[#d96d00] disabled:bg-slate-800 disabled:text-slate-500 shadow-md shadow-[#ea7600]/25 transition flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
             >
               {isConverting ? (
@@ -215,6 +239,8 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
                   <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
                   <span>Converting...</span>
                 </>
+              ) : isFbxSelected ? (
+                <span>FBX Unsupported</span>
               ) : (
                 <>
                   <Download className="w-3.5 h-3.5" aria-hidden="true" />
@@ -228,11 +254,29 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
               {isConverting
                 ? `Converting model to ${targetFormat.toUpperCase()}, please wait...`
                 : conversionError
-                ? `Conversion error: ${conversionError}`
+                ? `Notice: ${conversionError}`
                 : lastConvertedInfo
                 ? `Conversion completed successfully! Downloaded ${lastConvertedInfo}`
                 : ''}
             </div>
+          </div>
+        )}
+
+        {/* Notice/Error banner for unsupported formats or conversion errors */}
+        {!isMinimized && conversionError && (
+          <div className="text-[11px] text-amber-200 bg-amber-950/60 px-2.5 py-1.5 rounded-lg border border-amber-500/40 flex items-center justify-between animate-in fade-in duration-100">
+            <span className="flex items-center gap-1.5">
+              <span className="text-amber-400 font-bold">ℹ</span>
+              <span>{conversionError}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setConversionError(null)}
+              className="text-slate-400 hover:text-white cursor-pointer ml-2 text-xs"
+              aria-label="Dismiss message"
+            >
+              ×
+            </button>
           </div>
         )}
 

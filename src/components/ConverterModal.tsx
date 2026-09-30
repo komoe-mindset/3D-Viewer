@@ -58,7 +58,7 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
 
   // Conversion format options
   const [inputFormatOverride, setInputFormatOverride] = useState<InputFormat | 'auto'>('auto');
-  const [targetFormat, setTargetFormat] = useState<TargetFormat>('ply');
+  const [targetFormat, setTargetFormat] = useState<TargetFormat | 'fbx'>('glb');
   const [isBinary, setIsBinary] = useState<boolean>(true);
   const [includeNormals, setIncludeNormals] = useState<boolean>(true);
   const [includeColors, setIncludeColors] = useState<boolean>(true);
@@ -186,6 +186,13 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
 
   // Perform 3D conversion
   const handleConvertAndDownload = async () => {
+    if (targetFormat === 'fbx') {
+      const notice = 'FBX export requires server-side rendering, please use GLB or OBJ.';
+      setConversionError(notice);
+      if (onAddToast) onAddToast(notice, 'info');
+      return;
+    }
+
     setIsConverting(true);
     setConversionError(null);
     setConversionResult(null);
@@ -512,21 +519,45 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
                   id="target-format-select"
                   value={targetFormat}
                   onChange={(e) => {
-                    setTargetFormat(e.target.value as TargetFormat);
+                    const val = e.target.value as TargetFormat | 'fbx';
+                    setTargetFormat(val);
                     setConversionResult(null);
-                    setConversionError(null);
+                    if (val === 'fbx') {
+                      setConversionError('FBX export requires server-side rendering, please use GLB or OBJ.');
+                    } else {
+                      setConversionError(null);
+                    }
                   }}
                   aria-label="Target format for conversion"
                   className="w-full bg-[#242424] border border-[#404040] focus:border-amber-500 rounded-lg px-3 py-1.5 text-xs text-white appearance-none outline-none cursor-pointer focus:ring-1 focus:ring-amber-500 font-semibold"
                 >
+                  <option value="glb">GLB (.glb) — Binary glTF 2.0 (Recommended)</option>
+                  <option value="usdz">USDZ (.usdz) — Universal Scene Description (Apple AR / iOS)</option>
                   <option value="ply">PLY (.ply) — Polygon File Format</option>
                   <option value="obj">OBJ (.obj) — Wavefront 3D Object</option>
                   <option value="stl">STL (.stl) — Stereolithography (3D Printing)</option>
+                  <option value="fbx">FBX (.fbx) — Autodesk Filmbox (Server-side)</option>
                 </select>
                 <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true" />
               </div>
             </div>
           </div>
+
+          {/* Graceful FBX notice banner */}
+          {targetFormat === 'fbx' && (
+            <div
+              role="alert"
+              className="p-3 bg-amber-950/60 border border-amber-500/50 rounded-xl text-xs text-amber-200 flex items-start gap-2.5 animate-in fade-in duration-100"
+            >
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" aria-hidden="true" />
+              <div>
+                <span className="font-bold text-white block">FBX Export Unsupported Client-Side</span>
+                <p className="text-[11px] text-amber-300 mt-0.5 leading-relaxed">
+                  FBX export requires server-side rendering, please use GLB or OBJ.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* 4. Format Details & Quick Badges */}
           <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-xl text-xs text-slate-300 space-y-1.5">
@@ -534,24 +565,36 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
               <span className="font-semibold text-white flex items-center gap-1.5">
                 <Info className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
                 <span>
+                  {targetFormat === 'glb' && 'Binary glTF 2.0 (GLB)'}
+                  {targetFormat === 'usdz' && 'Universal Scene Description (USDZ)'}
                   {targetFormat === 'ply' && 'Polygon File Format (PLY)'}
                   {targetFormat === 'obj' && 'Wavefront Object (OBJ)'}
                   {targetFormat === 'stl' && 'Stereolithography (STL)'}
+                  {targetFormat === 'fbx' && 'Autodesk Filmbox (FBX)'}
                 </span>
               </span>
               <span className="font-mono text-[10px] text-slate-400">
+                {targetFormat === 'glb' && 'three/examples/jsm/exporters/GLTFExporter.js'}
+                {targetFormat === 'usdz' && 'three/examples/jsm/exporters/USDZExporter.js'}
                 {targetFormat === 'ply' && 'three/examples/jsm/exporters/PLYExporter.js'}
                 {targetFormat === 'obj' && 'three/examples/jsm/exporters/OBJExporter.js'}
                 {targetFormat === 'stl' && 'three/examples/jsm/exporters/STLExporter.js'}
+                {targetFormat === 'fbx' && 'Server-side rendering required'}
               </span>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
+              {targetFormat === 'glb' &&
+                'Industry standard 3D web format packaging meshes, PBR materials, textures, and transformations into a single compact binary file.'}
+              {targetFormat === 'usdz' &&
+                'Native augmented reality format developed by Apple & Pixar for iOS, iPadOS, macOS, and Safari AR Quick Look previews.'}
               {targetFormat === 'ply' &&
                 'High-fidelity polygon format supporting vertex coordinates, normals, vertex colors, and faces. Ideal for 3D scanning, point clouds, and photogrammetry.'}
               {targetFormat === 'obj' &&
                 'Universal 3D geometry interchange format recognized across all CAD, Blender, Maya, Unity, and 3D DCC tools. Exports vertices, normals, and UVs.'}
               {targetFormat === 'stl' &&
                 'Industry standard format for 3D Printing, CNC slicing, and rapid prototyping. Represents triangular surfaces with binary compactness.'}
+              {targetFormat === 'fbx' &&
+                'FBX export requires server-side rendering, please use GLB or OBJ.'}
             </p>
           </div>
 
@@ -751,9 +794,13 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
             type="button"
             role="button"
             onClick={handleConvertAndDownload}
-            disabled={isConverting || (sourceMode === 'scene' && !currentSceneModel) || (sourceMode === 'upload' && !uploadedFile)}
+            disabled={isConverting || targetFormat === 'fbx' || (sourceMode === 'scene' && !currentSceneModel) || (sourceMode === 'upload' && !uploadedFile)}
             aria-busy={isConverting}
-            aria-label={`Convert and download model as ${targetFormat.toUpperCase()}`}
+            aria-label={
+              targetFormat === 'fbx'
+                ? 'FBX export requires server-side rendering, please use GLB or OBJ.'
+                : `Convert and download model as ${targetFormat.toUpperCase()}`
+            }
             className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-[#ea7600] hover:bg-[#d96d00] disabled:bg-slate-800 disabled:text-slate-500 shadow-md shadow-[#ea7600]/30 transition flex items-center gap-2 cursor-pointer disabled:cursor-not-allowed active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
           >
             {isConverting ? (
@@ -761,6 +808,8 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
                 <Loader2 className="w-4 h-4 animate-spin text-white" aria-hidden="true" />
                 <span>{conversionStatusText || 'Converting...'}</span>
               </>
+            ) : targetFormat === 'fbx' ? (
+              <span>FBX Unsupported (Use GLB or OBJ)</span>
             ) : (
               <>
                 <ArrowRightLeft className="w-4 h-4" aria-hidden="true" />

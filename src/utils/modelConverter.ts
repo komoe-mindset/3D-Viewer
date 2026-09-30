@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { LoadedModel } from '../types';
 import { loadModelFile, disposeSceneHierarchy, disposeLoadedModel } from './modelLoaders';
 
-export type TargetFormat = 'ply' | 'obj' | 'stl';
+export type TargetFormat = 'glb' | 'usdz' | 'ply' | 'obj' | 'stl';
 export type InputFormat = 'glb' | 'gltf' | 'obj' | 'ply' | 'stl' | 'fbx' | 'spz' | 'ts' | 'js' | 'unknown';
 
 export interface ConversionOptions {
@@ -27,9 +27,39 @@ export interface ConversionResult {
 }
 
 /**
+ * Validates format support and provides user-friendly notices for unsupported formats (e.g., FBX).
+ */
+export function checkFormatSupport(format: string): { isSupported: boolean; notice?: string } {
+  const lower = (format || '').toLowerCase().trim();
+  if (lower === 'fbx') {
+    return {
+      isSupported: false,
+      notice: 'FBX export requires server-side rendering, please use GLB or OBJ.',
+    };
+  }
+  if (['glb', 'usdz', 'ply', 'obj', 'stl'].includes(lower)) {
+    return { isSupported: true };
+  }
+  return {
+    isSupported: false,
+    notice: `Export to format "${format.toUpperCase()}" is not supported client-side. Please choose GLB, USDZ, OBJ, PLY, or STL.`,
+  };
+}
+
+/**
  * On-demand lazy loaders for Three.js exporters.
  * Using dynamic import() guarantees zero impact on initial bundle size.
  */
+export async function getGLTFExporter() {
+  const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
+  return new GLTFExporter();
+}
+
+export async function getUSDZExporter() {
+  const { USDZExporter } = await import('three/examples/jsm/exporters/USDZExporter.js');
+  return new USDZExporter();
+}
+
 export async function getPLYExporter() {
   const { PLYExporter } = await import('three/examples/jsm/exporters/PLYExporter.js');
   return new PLYExporter();
@@ -125,6 +155,10 @@ export async function convertObject3D(
 
   const stats = inspectObjectGeometry(sourceObject);
 
+  if ((targetFormat as string).toLowerCase() === 'fbx') {
+    throw new Error('FBX export requires server-side rendering, please use GLB or OBJ.');
+  }
+
   // Validate format requirements
   if (targetFormat === 'stl' || targetFormat === 'obj') {
     if (!stats.hasMeshes) {
@@ -137,7 +171,13 @@ export async function convertObject3D(
         `The selected 3D model does not contain any exportable polygonal geometry.`
       );
     }
-  } else if (targetFormat === 'ply') {
+  } else if (targetFormat === 'usdz') {
+    if (!stats.hasMeshes) {
+      throw new Error(
+        `USDZ export requires polygonal surface meshes. Please convert to PLY or GLB instead.`
+      );
+    }
+  } else if (targetFormat === 'ply' || targetFormat === 'glb') {
     if (!stats.hasMeshes && !stats.hasPoints) {
       throw new Error(
         `The selected 3D model does not contain any exportable mesh or point geometry.`
@@ -217,6 +257,34 @@ export async function convertObject3D(
           reject(err);
         }
       });
+    } else if (targetFormat === 'glb') {
+      const exporter = await getGLTFExporter();
+      isBinary = true;
+      mimeType = 'model/gltf-binary';
+      const glbOutput = await exporter.parseAsync(exportObject, {
+        binary: true,
+        embedImages: true,
+        onlyVisible: true,
+      });
+      if (glbOutput instanceof ArrayBuffer) {
+        exportData = glbOutput;
+      } else if (glbOutput instanceof Uint8Array) {
+        exportData = glbOutput.buffer;
+      } else {
+        exportData = glbOutput as any;
+      }
+    } else if (targetFormat === 'usdz') {
+      const exporter = await getUSDZExporter();
+      isBinary = true;
+      mimeType = 'model/vnd.usdz+zip';
+      const usdzOutput = await exporter.parseAsync(exportObject);
+      if (usdzOutput instanceof ArrayBuffer) {
+        exportData = usdzOutput;
+      } else if (usdzOutput instanceof Uint8Array) {
+        exportData = usdzOutput.buffer;
+      } else {
+        exportData = usdzOutput as any;
+      }
     } else if (targetFormat === 'obj') {
       const exporter = await getOBJExporter();
       isBinary = false;
@@ -228,6 +296,8 @@ export async function convertObject3D(
       mimeType = isBinary ? 'application/octet-stream' : 'text/plain;charset=utf-8';
       const stlResult = exporter.parse(exportObject, { binary: isBinary });
       exportData = stlResult;
+    } else if ((targetFormat as string).toLowerCase() === 'fbx') {
+      throw new Error('FBX export requires server-side rendering, please use GLB or OBJ.');
     } else {
       throw new Error(`Unsupported target format: ${targetFormat}`);
     }
