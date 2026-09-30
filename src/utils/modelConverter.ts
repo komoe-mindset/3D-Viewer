@@ -150,8 +150,9 @@ export async function convertObject3D(
 ): Promise<ConversionResult> {
   const startTime = performance.now();
 
-  // Yield to browser UI thread to allow spinner and isConverting UI state to render immediately without blocking INP
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  // Defer heavy conversion parsing to next event loop tick using 50ms timeout
+  // so the conversion spinner immediately renders on the UI without blocking main thread responsiveness (INP)
+  await new Promise((resolve) => setTimeout(resolve, 50));
 
   const stats = inspectObjectGeometry(sourceObject);
 
@@ -228,7 +229,9 @@ export async function convertObject3D(
 
   try {
     if (targetFormat === 'ply') {
-      const exporter = await getPLYExporter();
+      // Dynamic import triggered only when PLY is selected
+      const { PLYExporter } = await import('three/examples/jsm/exporters/PLYExporter.js');
+      const exporter = new PLYExporter();
       isBinary = options.binary !== false;
       mimeType = isBinary ? 'application/octet-stream' : 'text/plain;charset=utf-8';
 
@@ -258,7 +261,9 @@ export async function convertObject3D(
         }
       });
     } else if (targetFormat === 'glb') {
-      const exporter = await getGLTFExporter();
+      // Dynamic import triggered only when GLB is selected
+      const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
+      const exporter = new GLTFExporter();
       isBinary = true;
       mimeType = 'model/gltf-binary';
       const glbOutput = await exporter.parseAsync(exportObject, {
@@ -274,7 +279,9 @@ export async function convertObject3D(
         exportData = glbOutput as any;
       }
     } else if (targetFormat === 'usdz') {
-      const exporter = await getUSDZExporter();
+      // Dynamic import triggered only when USDZ is selected
+      const { USDZExporter } = await import('three/examples/jsm/exporters/USDZExporter.js');
+      const exporter = new USDZExporter();
       isBinary = true;
       mimeType = 'model/vnd.usdz+zip';
       const usdzOutput = await exporter.parseAsync(exportObject);
@@ -286,12 +293,16 @@ export async function convertObject3D(
         exportData = usdzOutput as any;
       }
     } else if (targetFormat === 'obj') {
-      const exporter = await getOBJExporter();
+      // Dynamic import triggered only when OBJ is selected
+      const { OBJExporter } = await import('three/examples/jsm/exporters/OBJExporter.js');
+      const exporter = new OBJExporter();
       isBinary = false;
       mimeType = 'text/plain;charset=utf-8';
       exportData = exporter.parse(exportObject);
     } else if (targetFormat === 'stl') {
-      const exporter = await getSTLExporter();
+      // Dynamic import triggered only when STL is selected
+      const { STLExporter } = await import('three/examples/jsm/exporters/STLExporter.js');
+      const exporter = new STLExporter();
       isBinary = options.binary !== false;
       mimeType = isBinary ? 'application/octet-stream' : 'text/plain;charset=utf-8';
       const stlResult = exporter.parse(exportObject, { binary: isBinary });
@@ -412,22 +423,25 @@ export async function convertUploadedFile(
 
 /**
  * Triggers a native browser file download for a generated Blob
- * and safely revokes the ObjectURL after the download starts.
+ * and automatically revokes the created blob URL with URL.revokeObjectURL(url)
+ * shortly after triggering the download to eliminate memory leaks.
  */
 export function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-
-  // Revoke object URL after delay to allow browser download initiation
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 4000);
+  try {
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  } finally {
+    // Automatically revoke the created blob URL shortly after triggering the download to eliminate memory leaks
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 1000);
+  }
 }
 
 /**

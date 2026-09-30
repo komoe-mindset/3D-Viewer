@@ -79,6 +79,10 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
     setLastConvertedInfo(null);
     setConversionError(null);
 
+    // Defer the heavy conversion parsing to next event loop tick using 50ms timeout
+    // so the conversion spinner immediately renders on the UI without blocking main thread responsiveness (INP)
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
     try {
       const baseName = activeModel.name.replace(/\.[^/.]+$/, '');
       const result = await convertObject3D(activeModel.object, targetFormat, {
@@ -264,7 +268,11 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
 
         {/* Notice/Error banner for unsupported formats or conversion errors */}
         {!isMinimized && conversionError && (
-          <div className="text-[11px] text-amber-200 bg-amber-950/60 px-2.5 py-1.5 rounded-lg border border-amber-500/40 flex items-center justify-between animate-in fade-in duration-100">
+          <div
+            role="status"
+            aria-live="polite"
+            className="text-[11px] text-amber-200 bg-amber-950/60 px-2.5 py-1.5 rounded-lg border border-amber-500/40 flex items-center justify-between animate-in fade-in duration-100"
+          >
             <span className="flex items-center gap-1.5">
               <span className="text-amber-400 font-bold">ℹ</span>
               <span>{conversionError}</span>
@@ -282,7 +290,11 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
 
         {/* Converted result mini banner */}
         {!isMinimized && lastConvertedInfo && (
-          <div className="text-[11px] text-emerald-300 bg-emerald-950/40 px-2 py-0.5 rounded-lg border border-emerald-500/30 flex items-center justify-between">
+          <div
+            role="status"
+            aria-live="polite"
+            className="text-[11px] text-emerald-300 bg-emerald-950/40 px-2 py-0.5 rounded-lg border border-emerald-500/30 flex items-center justify-between"
+          >
             <span>✓ Downloaded: {lastConvertedInfo}</span>
             <button
               type="button"

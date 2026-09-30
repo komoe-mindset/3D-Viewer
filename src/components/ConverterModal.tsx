@@ -73,6 +73,23 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const targetFormatSelectRef = useRef<HTMLSelectElement>(null);
+  const primaryActionBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Auto-focus the select control or primary action upon modal open
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const timer = setTimeout(() => {
+      if (targetFormatSelectRef.current) {
+        targetFormatSelectRef.current.focus();
+      } else if (primaryActionBtnRef.current) {
+        primaryActionBtnRef.current.focus();
+      }
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [isOpen]);
 
   // Determine current active scene model
   const currentSceneModel = useMemo(() => {
@@ -137,7 +154,7 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
     return inspectObjectGeometry(currentSceneModel.object);
   }, [currentSceneModel]);
 
-  // Handle keyboard escape to close modal
+  // Handle keyboard escape to close modal and trap Tab navigation within modal
   useEffect(() => {
     if (!isOpen) return;
 
@@ -145,6 +162,33 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
       if (e.key === 'Escape' && !isConverting) {
         e.stopPropagation();
         onClose();
+        return;
+      }
+
+      // Prevent keyboard tab navigation from leaking out of the modal (focus trap)
+      if (e.key === 'Tab' && dialogRef.current) {
+        const focusableElements = dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+
+        if (focusableElements.length === 0) return;
+
+        const firstElement = focusableElements[0];
+        const lastElement = focusableElements[focusableElements.length - 1];
+
+        if (e.shiftKey) {
+          // Shift + Tab: if focused on first element or outside, loop to last element
+          if (document.activeElement === firstElement || !dialogRef.current.contains(document.activeElement)) {
+            e.preventDefault();
+            lastElement.focus();
+          }
+        } else {
+          // Tab: if focused on last element or outside, loop to first element
+          if (document.activeElement === lastElement || !dialogRef.current.contains(document.activeElement)) {
+            e.preventDefault();
+            firstElement.focus();
+          }
+        }
       }
     };
 
@@ -197,6 +241,10 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
     setConversionError(null);
     setConversionResult(null);
     setConversionStatusText(`Preparing ${targetFormat.toUpperCase()} export pipeline...`);
+
+    // Defer the heavy conversion parsing to next event loop tick using await new Promise(resolve => setTimeout(resolve, 50))
+    // so the conversion spinner immediately renders on the UI without blocking main thread responsiveness (INP)
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     try {
       let result: ConversionResult;
@@ -516,6 +564,7 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
               </label>
               <div className="relative">
                 <select
+                  ref={targetFormatSelectRef}
                   id="target-format-select"
                   value={targetFormat}
                   onChange={(e) => {
@@ -546,7 +595,8 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
           {/* Graceful FBX notice banner */}
           {targetFormat === 'fbx' && (
             <div
-              role="alert"
+              role="status"
+              aria-live="polite"
               className="p-3 bg-amber-950/60 border border-amber-500/50 rounded-xl text-xs text-amber-200 flex items-start gap-2.5 animate-in fade-in duration-100"
             >
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" aria-hidden="true" />
@@ -756,7 +806,8 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
           {/* 7. Error Alert */}
           {conversionError && (
             <div
-              role="alert"
+              role="status"
+              aria-live="polite"
               className="p-3 bg-red-950/50 border border-red-500/50 rounded-xl text-xs text-red-200 space-y-1 animate-in fade-in duration-150"
             >
               <div className="font-bold flex items-center gap-1.5 text-white">
@@ -791,6 +842,7 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
           </button>
 
           <button
+            ref={primaryActionBtnRef}
             type="button"
             role="button"
             onClick={handleConvertAndDownload}
