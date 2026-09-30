@@ -18,6 +18,8 @@ import { DropzoneOverlay } from './components/DropzoneOverlay';
 import { ToastContainer } from './components/Toast';
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { GoogleDriveModal } from './components/GoogleDriveModal';
+import { ConverterModal } from './components/ConverterModal';
+import { ConverterBar } from './components/ConverterBar';
 import {
   loadModelFile,
   createDemoModel,
@@ -79,6 +81,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
   const [isGoogleDriveOpen, setIsGoogleDriveOpen] = useState<boolean>(false);
+  const [isConverterOpen, setIsConverterOpen] = useState<boolean>(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   // Toast Helper
@@ -314,7 +317,9 @@ export default function App() {
 
       const key = e.key.toLowerCase();
 
-      if (key === 'w') {
+      if (key === 'c' && !e.ctrlKey && !e.metaKey) {
+        setIsConverterOpen((prev) => !prev);
+      } else if (key === 'w') {
         setGizmoMode('translate');
         addToast('Mode: Translate (Move)', 'info');
       } else if (key === 'e') {
@@ -494,6 +499,7 @@ export default function App() {
         onStopAnim={() => setIsAnimPlaying(false)}
         onSetAnimSpeed={setAnimSpeed}
         onOpenGoogleDrive={() => setIsGoogleDriveOpen(true)}
+        onOpenConverter={() => setIsConverterOpen(true)}
       />
 
       {/* 3. Floating Transform HUD (Top-Center) */}
@@ -510,6 +516,7 @@ export default function App() {
           setGizmoMode(null);
           setSelectedModelId(null);
         }}
+        onOpenConverter={() => setIsConverterOpen(true)}
       />
 
       {/* 4. Blender-Style 3D Viewport Orientation Gizmo & Navigation Strip */}
@@ -542,23 +549,44 @@ export default function App() {
         onLoadDemo={handleGenerateDemo}
         onLoadSampleScript={handleLoadSampleScript}
         onOpenGoogleDrive={() => setIsGoogleDriveOpen(true)}
+        onOpenConverter={() => setIsConverterOpen(true)}
       />
 
-      {/* 6. Non-blocking Toast Alerts */}
+      {/* 6. Quick Converter Bar (Docked when models are loaded) */}
+      {models.length > 0 && (
+        <ConverterBar
+          models={models}
+          selectedModelId={selectedModelId}
+          onOpenConverterModal={() => setIsConverterOpen(true)}
+          onAddToast={addToast}
+        />
+      )}
+
+      {/* 7. Non-blocking Toast Alerts */}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
 
-      {/* 7. Keyboard Shortcuts Modal */}
+      {/* 8. Keyboard Shortcuts Modal */}
       <ShortcutsModal
         isOpen={isShortcutsOpen}
         onClose={() => setIsShortcutsOpen(false)}
       />
 
-      {/* 8. Google Drive Importer Modal */}
+      {/* 9. Google Drive Importer Modal */}
       <GoogleDriveModal
         isOpen={isGoogleDriveOpen}
         onClose={() => setIsGoogleDriveOpen(false)}
         onLoadModelFile={(file) => handleFilesSelected([file])}
         loadedModelNames={models.map((m) => m.name)}
+        onAddToast={addToast}
+      />
+
+      {/* 10. 3D File Converter Modal */}
+      <ConverterModal
+        isOpen={isConverterOpen}
+        onClose={() => setIsConverterOpen(false)}
+        models={models}
+        selectedModelId={selectedModelId}
+        onLoadConvertedModel={(file) => handleFilesSelected([file])}
         onAddToast={addToast}
       />
     </div>

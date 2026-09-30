@@ -13,6 +13,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
     { key: 'W', desc: 'Activate Move / Translate Gizmo' },
     { key: 'E', desc: 'Activate Rotate Gizmo' },
     { key: 'R', desc: 'Activate Scale Gizmo' },
+    { key: 'C', desc: 'Open 3D File Converter (PLY, OBJ, STL)' },
     { key: 'X', desc: 'Toggle World / Local Transform Space' },
     { key: 'Q / Esc', desc: 'Deselect active model / Hide gizmo' },
     { key: 'F', desc: 'Frame / Focus camera on selected model' },

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Move, RotateCw, Maximize2, XCircle, Globe, Box } from 'lucide-react';
+import { Move, RotateCw, Maximize2, XCircle, Globe, Box, ArrowRightLeft } from 'lucide-react';
 import { GizmoMode, TransformSpace } from '../types';
 
 interface TransformHUDProps {
@@ -10,6 +10,7 @@ interface TransformHUDProps {
   onSetMode: (mode: GizmoMode) => void;
   onToggleSpace: () => void;
   onDeselect: () => void;
+  onOpenConverter?: () => void;
 }
 
 export const TransformHUD: React.FC<TransformHUDProps> = ({
@@ -20,6 +21,7 @@ export const TransformHUD: React.FC<TransformHUDProps> = ({
   onSetMode,
   onToggleSpace,
   onDeselect,
+  onOpenConverter,
 }) => {
   return (
     <nav
@@ -151,6 +153,24 @@ export const TransformHUD: React.FC<TransformHUDProps> = ({
             X
           </kbd>
         </button>
+
+        {/* Quick Convert Button */}
+        {hasSelection && onOpenConverter && (
+          <>
+            <div className="h-4 w-px bg-[#383838] mx-0.5" aria-hidden="true" />
+            <button
+              type="button"
+              role="button"
+              onClick={onOpenConverter}
+              aria-label={`Convert ${selectedModelName || 'active model'} to PLY, OBJ, or STL`}
+              title="Convert 3D Model (PLY, OBJ, STL)"
+              className="px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-semibold text-amber-300 hover:text-white hover:bg-amber-600/25 border border-amber-500/40 transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 focus-visible:ring-offset-[#242424]"
+            >
+              <ArrowRightLeft className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
+              <span className="hidden sm:inline">Convert</span>
+            </button>
+          </>
+        )}
       </div>
     </nav>
   );

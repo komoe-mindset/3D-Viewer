@@ -1,5 +1,5 @@
 import React from 'react';
-import { UploadCloud, FileCode2, Box, Code2 } from 'lucide-react';
+import { UploadCloud, FileCode2, Box, Code2, ArrowRightLeft } from 'lucide-react';
 import { ACCEPTED_FILE_EXTENSIONS } from '../types';
 import { GoogleDriveIcon } from './GoogleDriveModal';
 
@@ -10,6 +10,7 @@ interface DropzoneOverlayProps {
   onLoadDemo: () => void;
   onLoadSampleScript?: () => void;
   onOpenGoogleDrive?: () => void;
+  onOpenConverter?: () => void;
 }
 
 export const DropzoneOverlay: React.FC<DropzoneOverlayProps> = ({
@@ -19,6 +20,7 @@ export const DropzoneOverlay: React.FC<DropzoneOverlayProps> = ({
   onLoadDemo,
   onLoadSampleScript,
   onOpenGoogleDrive,
+  onOpenConverter,
 }) => {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -119,6 +121,19 @@ export const DropzoneOverlay: React.FC<DropzoneOverlayProps> = ({
                 >
                   <GoogleDriveIcon className="w-4 h-4" aria-hidden="true" />
                   <span>Google Drive</span>
+                </button>
+              )}
+              {onOpenConverter && (
+                <button
+                  type="button"
+                  role="button"
+                  onClick={onOpenConverter}
+                  aria-label="Open 3D File Converter to convert to PLY, OBJ, or STL"
+                  title="Open 3D File Converter (PLY, OBJ, STL)"
+                  className="bg-amber-600/25 hover:bg-amber-600/35 border border-amber-500/50 text-amber-200 hover:text-amber-100 font-semibold text-xs px-4 py-2.5 rounded-xl transition flex items-center justify-center gap-2 cursor-pointer active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+                >
+                  <ArrowRightLeft className="w-4 h-4 text-amber-400" aria-hidden="true" />
+                  <span>3D Converter</span>
                 </button>
               )}
               {onLoadSampleScript && (

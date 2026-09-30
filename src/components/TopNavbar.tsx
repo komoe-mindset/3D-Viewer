@@ -26,6 +26,7 @@ import {
   Minimize,
   Grid,
   Compass,
+  ArrowRightLeft,
 } from 'lucide-react';
 import {
   LoadedModel,
@@ -81,6 +82,7 @@ interface TopNavbarProps {
   onStopAnim: () => void;
   onSetAnimSpeed: (speed: number) => void;
   onOpenGoogleDrive: () => void;
+  onOpenConverter: () => void;
 }
 
 type OpenDropdown = 'models' | 'lighting' | 'display' | 'animation' | 'stats' | null;
@@ -130,6 +132,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   onStopAnim,
   onSetAnimSpeed,
   onOpenGoogleDrive,
+  onOpenConverter,
 }) => {
   const [openMenu, setOpenMenu] = useState<OpenDropdown>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -917,6 +920,19 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         >
           <GoogleDriveIcon className="w-3.5 h-3.5" aria-hidden="true" />
           <span className="hidden sm:inline">Google Drive</span>
+        </button>
+
+        {/* 3D Converter Button */}
+        <button
+          type="button"
+          role="button"
+          onClick={onOpenConverter}
+          aria-label="Open client-side 3D File Converter (Convert to PLY, OBJ, STL)"
+          title="Convert 3D Models (to PLY, OBJ, STL)"
+          className="glass-button px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-200 hover:text-white flex items-center gap-1.5 transition active:scale-95 cursor-pointer border border-amber-500/40 hover:border-amber-400/70 hover:bg-amber-600/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 focus-visible:ring-offset-[#242424]"
+        >
+          <ArrowRightLeft className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
+          <span className="hidden sm:inline">Convert 3D</span>
         </button>
 
         {/* Demo Object */}
