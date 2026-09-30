@@ -38,6 +38,7 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
   const [isConverting, setIsConverting] = useState<boolean>(false);
   const [isMinimized, setIsMinimized] = useState<boolean>(false);
   const [lastConvertedInfo, setLastConvertedInfo] = useState<string | null>(null);
+  const [conversionError, setConversionError] = useState<string | null>(null);
 
   // Active selected or first available model
   const activeModel = useMemo(() => {
@@ -67,6 +68,7 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
 
     setIsConverting(true);
     setLastConvertedInfo(null);
+    setConversionError(null);
 
     try {
       const baseName = activeModel.name.replace(/\.[^/.]+$/, '');
@@ -86,6 +88,7 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
     } catch (err: any) {
       console.error('Quick conversion error:', err);
       const msg = err?.message || 'Conversion failed.';
+      setConversionError(msg);
       if (onAddToast) {
         onAddToast(msg, 'error');
       }
@@ -220,9 +223,15 @@ export const ConverterBar: React.FC<ConverterBarProps> = ({
               )}
             </button>
 
-            {/* Live region for accessibility announcements */}
-            <div role="status" aria-live="polite" className="sr-only">
-              {isConverting ? `Converting to ${targetFormat.toUpperCase()}` : lastConvertedInfo ? `Converted ${lastConvertedInfo}` : ''}
+            {/* Live region for accessibility announcements (completion and errors) */}
+            <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+              {isConverting
+                ? `Converting model to ${targetFormat.toUpperCase()}, please wait...`
+                : conversionError
+                ? `Conversion error: ${conversionError}`
+                : lastConvertedInfo
+                ? `Conversion completed successfully! Downloaded ${lastConvertedInfo}`
+                : ''}
             </div>
           </div>
         )}

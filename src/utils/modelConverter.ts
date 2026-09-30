@@ -120,8 +120,8 @@ export async function convertObject3D(
 ): Promise<ConversionResult> {
   const startTime = performance.now();
 
-  // Yield to browser UI thread to allow spinner to paint and prevent INP degradation
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // Yield to browser UI thread to allow spinner and isConverting UI state to render immediately without blocking INP
+  await new Promise((resolve) => setTimeout(resolve, 40));
 
   const stats = inspectObjectGeometry(sourceObject);
 
@@ -149,6 +149,39 @@ export async function convertObject3D(
   // We apply matrix world updates so exported coordinates are accurate
   sourceObject.updateMatrixWorld(true);
 
+  // Track any cloned geometries and materials to guarantee complete Three.js memory cleanup
+  const clonedGeometries: THREE.BufferGeometry[] = [];
+  const clonedMaterials: THREE.Material[] = [];
+  let exportObject: THREE.Object3D = sourceObject;
+
+  if (options.applyTransforms) {
+    exportObject = sourceObject.clone(true);
+    exportObject.traverse((child) => {
+      if (child instanceof THREE.Mesh && child.geometry) {
+        const clonedGeom = child.geometry.clone();
+        clonedGeom.applyMatrix4(child.matrixWorld);
+        child.geometry = clonedGeom;
+        child.position.set(0, 0, 0);
+        child.rotation.set(0, 0, 0);
+        child.scale.set(1, 1, 1);
+        child.updateMatrix();
+        clonedGeometries.push(clonedGeom);
+      }
+      if ((child as any).material) {
+        const mat = (child as any).material;
+        if (Array.isArray(mat)) {
+          mat.forEach((m) => {
+            const clonedMat = m.clone();
+            clonedMaterials.push(clonedMat);
+          });
+        } else if (mat) {
+          const clonedMat = mat.clone();
+          clonedMaterials.push(clonedMat);
+        }
+      }
+    });
+  }
+
   let exportData: ArrayBuffer | string | DataView | null = null;
   let isBinary = options.binary !== false;
   let mimeType = 'application/octet-stream';
@@ -167,7 +200,7 @@ export async function convertObject3D(
       exportData = await new Promise<ArrayBuffer | string>((resolve, reject) => {
         try {
           const res = exporter.parse(
-            sourceObject,
+            exportObject,
             (output) => {
               if (output) resolve(output);
             },
@@ -188,12 +221,12 @@ export async function convertObject3D(
       const exporter = await getOBJExporter();
       isBinary = false;
       mimeType = 'text/plain;charset=utf-8';
-      exportData = exporter.parse(sourceObject);
+      exportData = exporter.parse(exportObject);
     } else if (targetFormat === 'stl') {
       const exporter = await getSTLExporter();
       isBinary = options.binary !== false;
       mimeType = isBinary ? 'application/octet-stream' : 'text/plain;charset=utf-8';
-      const stlResult = exporter.parse(sourceObject, { binary: isBinary });
+      const stlResult = exporter.parse(exportObject, { binary: isBinary });
       exportData = stlResult;
     } else {
       throw new Error(`Unsupported target format: ${targetFormat}`);
@@ -202,6 +235,35 @@ export async function convertObject3D(
     throw new Error(
       `Failed to export 3D geometry to ${targetFormat.toUpperCase()}: ${err?.message || err}`
     );
+  } finally {
+    // Implement proper Three.js memory cleanup: dispose() cloned geometries & materials once export completes
+    for (const geom of clonedGeometries) {
+      try {
+        if (geom.attributes) {
+          for (const attrName of Object.keys(geom.attributes)) {
+            const attr = geom.attributes[attrName];
+            if (attr && typeof (attr as any).dispose === 'function') {
+              (attr as any).dispose();
+            }
+          }
+        }
+        if (geom.index && typeof (geom.index as any).dispose === 'function') {
+          (geom.index as any).dispose();
+        }
+        geom.dispose();
+      } catch (e) {
+        console.warn('Error disposing cloned geometry:', e);
+      }
+    }
+    for (const mat of clonedMaterials) {
+      try {
+        mat.dispose();
+      } catch (e) {
+        console.warn('Error disposing cloned material:', e);
+      }
+    }
+    clonedGeometries.length = 0;
+    clonedMaterials.length = 0;
   }
 
   if (!exportData) {
@@ -227,6 +289,9 @@ export async function convertObject3D(
   const finalFilename = `${baseName}.${targetFormat}`;
 
   const durationMs = Math.round(performance.now() - startTime);
+
+  // Yield back to main thread after heavy blob generation before returning
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   return {
     blob,

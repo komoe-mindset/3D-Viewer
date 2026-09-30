@@ -259,18 +259,27 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
     }
   };
 
+  // Handle backdrop click to close modal
+  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget && !isConverting) {
+      onClose();
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-labelledby="converter-dialog-title"
+      aria-labelledby="converter-title"
       aria-describedby="converter-dialog-description"
+      onClick={handleBackdropClick}
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-150"
     >
       <div
         ref={dialogRef}
+        onClick={(e) => e.stopPropagation()}
         className="w-full max-w-xl bg-[#202020] border border-[#3c3c3c] rounded-2xl shadow-2xl overflow-hidden flex flex-col text-[#e0e0e0] font-sans"
       >
         {/* Modal Header */}
@@ -280,7 +289,7 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
               <ArrowRightLeft className="w-4 h-4" aria-hidden="true" />
             </div>
             <div>
-              <h2 id="converter-dialog-title" className="text-sm font-bold text-white flex items-center gap-2">
+              <h2 id="converter-title" className="text-sm font-bold text-white flex items-center gap-2">
                 <span>3D File Converter</span>
                 <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
                   Client-Side
@@ -715,9 +724,15 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
             </div>
           )}
 
-          {/* Status Announcer (aria-live) */}
-          <div role="status" aria-live="polite" className="sr-only">
-            {isConverting ? conversionStatusText : conversionResult ? 'Conversion completed' : ''}
+          {/* Status Announcer (aria-live='polite') for conversion completion and error notifications */}
+          <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+            {isConverting
+              ? conversionStatusText || 'Converting 3D model, please wait...'
+              : conversionError
+              ? `Conversion error: ${conversionError}`
+              : conversionResult
+              ? `Conversion completed successfully! Generated ${conversionResult.filename} (${formatBytes(conversionResult.size)}). Download started.`
+              : ''}
           </div>
         </div>
 
